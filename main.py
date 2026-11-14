@@ -13,13 +13,13 @@ if not os.getenv("GOOGLE_API_KEY"):
 
 from typing import Annotated, NotRequired
 
+from agents.sector_protocols import obter_protocolo
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from sector_protocols import obter_protocolo
 from tools.valuation import fluxo_de_caixa_futuro_buffet
 from typing_extensions import TypedDict
 
@@ -63,7 +63,7 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-3.8-flash",
     temperature=0,
     # timeout=60,
-    max_retries=10,
+    max_retries=3,
 )
 llm_com_ferramentas = llm.bind_tools(ferramentas)
 
@@ -106,6 +106,9 @@ grafo.add_edge("Calculadora", "Analista")
 app = grafo.compile()
 
 # 5. TESTE PRÁTICO COM MOCK JSON
+
+# TODO: Elaborar o agente de extração de dados para ler os balanços e resultados
+#       trimestrais e gerar o JSON de entrada pra o agente analista.
 if __name__ == "__main__":
     mock_json_bbdc3 = """
     {
