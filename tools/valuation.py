@@ -1,3 +1,7 @@
+from langchain_core.tools import tool
+
+
+@tool
 def fluxo_de_caixa_futuro_buffet(
     lucro_base: float,
     payout: float,
