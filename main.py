@@ -1,8 +1,13 @@
+import json
+import operator
 import os
+import sys
+from pathlib import Path
+from typing import Annotated, NotRequired
 
 from dotenv import load_dotenv
+from typing_extensions import TypedDict
 
-# Carrega as variáveis do arquivo .env para o ambiente do sistema
 load_dotenv()
 
 if not os.getenv("GOOGLE_API_KEY"):
@@ -11,107 +16,196 @@ if not os.getenv("GOOGLE_API_KEY"):
         "Defina essa variável no arquivo .env antes de executar o programa."
     )
 
-import operator
-from typing import Annotated, NotRequired
-
+from agents.extrator import extrair_dados_do_pdf
 from agents.sector_protocols import obter_protocolo
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+from tools.market_data import (
+    buscar_dados_mercado_yfinance,
+    calcular_multiplos_basicos,
+    projetar_lucro_anual_cenarios,
+)
 from tools.valuation import fluxo_de_caixa_futuro_buffet
-from typing_extensions import TypedDict
 
 # ==========================================
-# Definindo as ferramentas e o modelo do agente
+# 1. Definindo as ferramentas e o modelo
 # ==========================================
+ferramentas = [
+    buscar_dados_mercado_yfinance,
+    projetar_lucro_anual_cenarios,
+    calcular_multiplos_basicos,
+    fluxo_de_caixa_futuro_buffet,
+]
 
-ferramentas = [fluxo_de_caixa_futuro_buffet]
-
-# Usamos a classe nativa do Google em vez do init_chat_model para garantir as integrações
 llm = ChatGoogleGenerativeAI(model="gemini-3.8-flash", temperature=0, max_retries=3)
 model_with_tools = llm.bind_tools(ferramentas)
 
 
 # ==========================================
-# Definindo o estado do agente
+# 2. Definindo o estado do agente
 # ==========================================
 class AgentState(TypedDict):
-    # O operator.add garante que as mensagens sejam empilhadas e nunca sobrescritas
     messages: Annotated[list[AnyMessage], operator.add]
     setor: NotRequired[str]
+    ticker: NotRequired[str]
+    caminhos_pdfs: NotRequired[list[str]]  # Lista com todos os PDFs da subpasta
 
 
 # ==========================================
-# Definindo o nó do agente analista
+# 3. Definindo os nós do grafo
 # ==========================================
+def extrator_node(state: AgentState):
+    caminhos = state.get("caminhos_pdfs", [])
+    ticker = state.get("ticker", "Desconhecido")
+
+    if not caminhos:
+        return {"messages": []}
+
+    historico_trimestral = []
+
+    for caminho in sorted(caminhos):
+        nome_arq = Path(caminho).name
+        print(f"[Extrator] Extraindo dados de {nome_arq}...")
+        dados_tri = extrair_dados_do_pdf(caminho)
+        dados_tri["arquivo_origem"] = nome_arq
+        historico_trimestral.append(dados_tri)
+
+    # Ordena cronologicamente pelo código do trimestre (ex: 1T26, 2T26, 3T26)
+    historico_trimestral.sort(key=lambda x: x.get("trimestre_referencia", ""))
+
+    json_consolidado = json.dumps(historico_trimestral, indent=2, ensure_ascii=False)
+    print(
+        f"\n[Extrator] Histórico Trimestral Consolidado ({ticker}):\n{json_consolidado}\n"
+    )
+
+    mensagem = HumanMessage(
+        content=(
+            f"Ativo: {ticker}.\n"
+            f"Histórico de trimestres extraídos dos PDFs:\n{json_consolidado}\n\n"
+            "Siga rigorosamente o passo a passo das ferramentas para consolidar o ano e calcular os dois cenários."
+        )
+    )
+
+    return {"messages": [mensagem]}
+
+
 def analista_node(state: AgentState):
     mensagens = state["messages"]
 
-    # Adiciona o System Prompt dinâmico apenas se for o início da conversa
     if not any(isinstance(m, SystemMessage) for m in mensagens):
         protocolo = obter_protocolo(state.get("setor", "banco"))
         prompt_sistema = SystemMessage(
             content=(
-                f"Você é um analista sênior especializado em {protocolo.nome}. "
-                f"{protocolo.instrucoes} "
-                "Use a ferramenta de valuation para calcular o preço teto e, em seguida, "
-                "escreva um relatório recomendando se a ação está cara ou barata."
+                f"Você é um analista fundamentalista sênior especializado em {protocolo.nome}. "
+                f"{protocolo.instrucoes}\n\n"
+                "ROTEIRO OBRIGATÓRIO DE EXECUÇÃO DE FERRAMENTAS:\n"
+                "1. Leia a 'visao_da_gestao' e o 'resumo_momento_operacional' que vieram do extrator.\n"
+                "2. Baseado no tom da diretoria (otimista/cauteloso) e nos números, decida de forma embasada se o `momento_operacional` é 'recuperacao', 'estavel' ou 'deteriorando'.\n"
+                "3. Chame `buscar_dados_mercado_yfinance` APENAS para obter o `preco_atual`. "
+                "Para o número de ações, use EXCLUSIVAMENTE o `numero_total_acoes` que veio extraído do PDF mais recente.\n"
+                "4. Avalie a evolução dos trimestres extraídos e defina o `momento_operacional` ('recuperacao', 'estavel' ou 'deteriorando'). "
+                "Em seguida, chame `projetar_lucro_anual_cenarios` passando a lista de `lucro_liquido_trimestral` em ordem cronológica.\n"
+                "5. Chame `calcular_multiplos_basicos` duas vezes (uma para o lucro anual conservador e outra para o lucro anual mediano), "
+                "usando o Patrimônio Líquido e o `numero_total_acoes` do PDF mais recente.\n"
+                "6. Chame `fluxo_de_caixa_futuro_buffet` duas vezes:\n"
+                "   - Execução A (Cenário Conservador): usando o `lucro_anual_conservador`.\n"
+                "   - Execução B (Cenário Mediano): usando o `lucro_anual_mediano`.\n"
+                "   (Use taxa_desconto=0.18, crescimento_perpetuo=0.03, numero_total_acoes extraído do PDF e o ROE/Payout do trimestre mais recente).\n\n"
+                "REGRAS ESTRITAS DE COMPLIANCE E FORMATAÇÃO:\n"
+                "- JAMAIS invente, deduza ou faça contas de cabeça. Use exclusivamente os retornos das ferramentas.\n"
+                "- JAMAIS use palavras de recomendação ('Compra', 'Venda', 'Manter', 'Comprar', 'Vender'). "
+                "Apenas apresente a diferença percentual (Margem de Segurança / Desconto) entre o Preço Atual e o Preço Justo de cada cenário.\n"
+                "- Estruture a resposta em Markdown limpo, iniciando com uma Tabela Comparativa lado a lado: "
+                "Colunas: [Métrica | Cenário Conservador | Cenário Mediano | Referência Atual]."
+                "- Crie uma seção 'Perspectivas da Gestão' resumindo o que a diretoria reportou nos documentos e se o tom justifica aplicar o cenário conservador ou mediano."
             )
         )
         mensagens = [prompt_sistema] + mensagens
 
-    print("[Analista] Processando dados...")
+    print("[Analista] Processando dados e acionando ferramentas...")
     resposta = model_with_tools.invoke(mensagens)
-
-    # O retorno deve ser sempre um dicionário com a chave que queremos atualizar no estado
     return {"messages": [resposta]}
 
 
 # ==========================================
-# Criando o fluxo de trabalho do agente
+# 4. Construindo e compilando o Grafo
 # ==========================================
 workflow = StateGraph(AgentState)
 
-# Adiciona os nós
+workflow.add_node("extrator", extrator_node)
 workflow.add_node("analista", analista_node)
-workflow.add_node("ferramentas", ToolNode(ferramentas))  # Faz o papel do 'tool_node'
+workflow.add_node("ferramentas", ToolNode(ferramentas))
 
-# Conecta o fluxo
-workflow.add_edge(START, "analista")
-
-# Se o LLM pedir ferramenta, vai para "ferramentas". Se não pedir, vai para END.
+workflow.add_edge(START, "extrator")
+workflow.add_edge("extrator", "analista")
 workflow.add_conditional_edges(
     "analista",
-    tools_condition,  # Faz o papel do 'should_continue'
+    tools_condition,
     {"tools": "ferramentas", "__end__": END},
 )
-
-# Após a ferramenta rodar, devolve para o analista ler o resultado
 workflow.add_edge("ferramentas", "analista")
 
-# Compila o agente
 app = workflow.compile()
 
-# TODO: Elaborar o agente de extração de dados para ler os balanços e resultados
-#       trimestrais e gerar o JSON de entrada pra o agente analista.
+
+# ==========================================
+# 5. Execução em Lote (Agrupada por Ativo)
+# ==========================================
 if __name__ == "__main__":
-    mock_json_bbdc3 = (
-        "{"
-        '"lucro_base_2024": 17542153000, '
-        '"payout_medio": 0.50, '
-        '"roe_atual": 0.1165, '
-        '"taxa_desconto_wacc": 0.15, '
-        '"crescimento_perpetuo_esperado": 0.03, '
-        '"total_acoes": 10592012000, '
-        '"preco_atual": 16.72}'
-    )
+    # Garante que o caminho funcione rodando de dentro ou de fora da pasta do projeto
+    pasta_base = Path(__file__).parent
+    pasta_reports = pasta_base / "reports"
 
-    mensagem_inicial = HumanMessage(content=f"Dados extraídos: {mock_json_bbdc3}")
+    if not pasta_reports.exists():
+        pasta_reports.mkdir(parents=True)
+        print(
+            f"Pasta '{pasta_reports}' criada! Adicione subpastas (ex: reports/BBDC3/) com os PDFs."
+        )
+        sys.exit()
 
-    # Invoca o agente passando a mensagem e o setor
-    resultado_final = app.invoke({"messages": [mensagem_inicial], "setor": "banco"})
+    print("\nIniciando Varredura de Relatórios Trimestrais...\n")
 
-    # Imprime apenas o relatório final (a última mensagem do LLM)
-    print("\n--- RELATÓRIO FINAL ---")
-    resultado_final["messages"][-1].pretty_print()
+    for pasta_ticker in sorted(pasta_reports.iterdir()):
+        if pasta_ticker.is_dir():
+            ticker_atual = pasta_ticker.name
+            arquivos_pdf = sorted(str(p) for p in pasta_ticker.glob("*.pdf"))
+
+            if not arquivos_pdf:
+                continue
+
+            print(f"{'=' * 60}")
+            print(f"Ativo: {ticker_atual} | {len(arquivos_pdf)} PDF(s) encontrado(s)")
+            print(f"{'=' * 60}")
+
+            try:
+                resultado_final = app.invoke(
+                    {
+                        "messages": [],
+                        "setor": "banco",
+                        "ticker": ticker_atual,
+                        "caminhos_pdfs": arquivos_pdf,
+                    }
+                )
+
+                # Extrai o texto puro (tratando caso o Gemini devolva lista de blocos ou string direta)
+                conteudo_bruto = resultado_final["messages"][-1].content
+                if isinstance(conteudo_bruto, list):
+                    texto_relatorio = "\n".join(
+                        bloco.get("text", "")
+                        for bloco in conteudo_bruto
+                        if isinstance(bloco, dict)
+                    )
+                else:
+                    texto_relatorio = str(conteudo_bruto)
+
+                # Salva o relatório em Markdown dentro da pasta da ação
+                caminho_md = pasta_ticker / f"Valuation_{ticker_atual}.md"
+                with open(caminho_md, "w", encoding="utf-8") as f:
+                    f.write(texto_relatorio)
+
+                print(f"\n[SUCESSO] Relatório salvo em: {caminho_md}\n")
+
+            except Exception as e:
+                print(f"[ERRO] Falha ao processar {ticker_atual}: {e!s}\n")

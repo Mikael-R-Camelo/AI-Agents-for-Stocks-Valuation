@@ -9,6 +9,9 @@ class ProtocoloSetor:
     instrucoes: str
 
 
+# TODO: Por enquanto os prompts estão muito genéricos somente para fins de testes simples.
+#       Necessário criar prompts mais específicos para cada setor, com instruções detalhadas
+#       sobre como analisar os dados financeiros e de mercado.
 PROTOCOLOS_SETOR: dict[str, ProtocoloSetor] = {
     "banco": ProtocoloSetor(
         nome="bancos",

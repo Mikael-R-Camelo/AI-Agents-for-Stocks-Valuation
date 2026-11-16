@@ -10,7 +10,7 @@ def fluxo_de_caixa_futuro_buffet(
     crescimento_perpetuo: float,
     num_acoes: float,
     preco_atual: float,
-    crescimento_ano_1: float = None,  # type: ignore
+    # crescimento_ano_1: float = None,  # type: ignore
     anos_projecao: int = 4,
 ):
     """
@@ -27,11 +27,11 @@ def fluxo_de_caixa_futuro_buffet(
 
     # 2. Projeção dos Fluxos (Anos 1 a N)
     for ano in range(1, anos_projecao + 1):
-        # A planilha permite usar uma taxa de expectativa diferente (ex: 30%) no primeiro ano projetado
-        if ano == 1 and crescimento_ano_1 is not None:
-            taxa_crescimento = crescimento_ano_1
-        else:
-            taxa_crescimento = crescimento_sustentavel
+        taxa_crescimento = crescimento_sustentavel
+        # if ano == 1 and crescimento_ano_1 is not None:
+        #     taxa_crescimento = crescimento_ano_1
+        # else:
+        #     taxa_crescimento = crescimento_sustentavel
 
         lucro_projetado = lucro_anterior * (1 + taxa_crescimento)
         fluxos_projetados.append(lucro_projetado)
@@ -69,20 +69,3 @@ def fluxo_de_caixa_futuro_buffet(
         "Margem de Segurança Planilha (%)": round(margem_seguranca * 100, 2),
         "Upside Real (%)": round(upside_tradicional * 100, 2),
     }
-
-
-# # --- EXEMPLO DE USO PARA BBDC3---
-# resultado = fluxo_de_caixa_futuro_buffet(
-#     lucro_base=17_542_153_000,  # Lucro de 2024 da planilha
-#     payout=0.50,  # Payout de 50%
-#     roe=0.1165,  # ROE de 11,65%
-#     taxa_desconto=0.15,  # Taxa de 15% (Selic + Risco)
-#     crescimento_perpetuo=0.03,  # Crescimento perpétuo de 3%
-#     num_acoes=10_592_012_000,  # Total de ações
-#     preco_atual=16.72,  # Preço lido na planilha
-#     crescimento_ano_1=0.30,  # A planilha jogou 30% de aumento no 1º ano projetado
-#     anos_projecao=4,
-# )
-
-# for chave, valor in resultado.items():
-#     print(f"{chave}: {valor}")

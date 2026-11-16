@@ -1,0 +1,18 @@
+# Gerenciamento de variáveis de ambiente (.env)
+python-dotenv
+
+# Ecossistema LangChain e LangGraph
+langgraph
+langchain-community
+
+# Integração oficial com a API do Google Gemini
+langchain-google-genai
+
+# Leitura e extração de PDFs
+pypdf
+
+# Estruturação rigorosa de dados (JSON) para o agente extrator
+pydantic
+
+# Consulta de dados financeiros
+yfinance
