@@ -209,7 +209,7 @@ def roteador_validador(state: AgentState) -> str:
     mensagens = state["messages"]
     tentativas = state.get("tentativas_extracao", 0)
 
-    # Se a última mensagem for ERRO (HumanMessage com a palavra ERRO)
+    # Se a última mensagem for de ERRO (HumanMessage com a palavra ERRO)
     # E ainda não estourou o limite de tentativas, volta pro extrator.
     if mensagens and "ERRO DE VALIDAÇÃO" in mensagens[-1].content:
         if tentativas < 3:
