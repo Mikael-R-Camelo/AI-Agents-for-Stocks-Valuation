@@ -112,3 +112,63 @@ def calcular_multiplos_basicos(
         "P_VP": round(pvp, 2),
         "ROE_calculado": round(roe, 4),
     }
+
+
+import pandas as pd
+from langchain_core.tools import tool
+
+
+@tool
+def buscar_medias_historicas_yfinance(ticker: str) -> dict:
+    """
+    Busca o ROE médio (Retorno sobre Patrimônio Líquido)
+    dos últimos 4 anos utilizando os dados contábeis anuais do Yahoo Finance.
+    """
+    ticker_yf = (
+        f"{ticker.upper().strip()}.SA"
+        if not ticker.upper().endswith(".SA")
+        else ticker.upper()
+    )
+    acao = yf.Ticker(ticker_yf)
+
+    try:
+        # Puxa a DRE (Lucro) e o Balanço Patrimonial (Patrimônio) anuais
+        dre = acao.financials
+        bp = acao.balance_sheet
+
+        roe_anos = []
+
+        # Verifica se as linhas contábeis padrão existem no ticker
+        if "Net Income" in dre.index and "Stockholders Equity" in bp.index:
+            lucros = dre.loc["Net Income"]
+            patrimonios = bp.loc["Stockholders Equity"]
+
+            # Itera sobre as colunas (que representam os anos)
+            for ano in lucros.index:
+                if ano in patrimonios.index:
+                    lucro = lucros[ano]
+                    patrimonio = patrimonios[ano]
+
+                    # Filtra valores vazios (NaN) e garante que o patrimônio é positivo
+                    if pd.notna(lucro) and pd.notna(patrimonio) and patrimonio > 0:
+                        roe_ano = lucro / patrimonio
+                        roe_anos.append(roe_ano)
+
+        if not roe_anos:
+            return {
+                "erro": "Dados contábeis insuficientes no Yahoo Finance para calcular o ROE."
+            }
+
+        roe_medio = sum(roe_anos) / len(roe_anos)
+
+        return {
+            "ticker": ticker.upper(),
+            "anos_analisados": len(roe_anos),
+            "roe_medio_historico": round(roe_medio, 4),  # Ex: 0.1650 (16,5%)
+            "roes_anuais_identificados": [
+                round(r, 4) for r in roe_anos
+            ],  # Mostra a variação pro agente
+        }
+
+    except Exception as e:
+        return {"erro": f"Falha ao buscar histórico: {e!s}"}

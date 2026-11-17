@@ -24,6 +24,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 from tools.market_data import (
     buscar_dados_mercado_yfinance,
+    buscar_medias_historicas_yfinance,
+    buscar_payout_medio_historico_yfinance,
     calcular_multiplos_basicos,
     projetar_lucro_anual_cenarios,
 )
@@ -34,6 +36,8 @@ from tools.valuation import fluxo_de_caixa_futuro_buffet
 # ==========================================
 ferramentas = [
     buscar_dados_mercado_yfinance,
+    buscar_medias_historicas_yfinance,
+    buscar_payout_medio_historico_yfinance,
     projetar_lucro_anual_cenarios,
     calcular_multiplos_basicos,
     fluxo_de_caixa_futuro_buffet,
@@ -105,13 +109,16 @@ def analista_node(state: AgentState):
                 "2. Baseado no tom da diretoria (otimista/cauteloso) e nos números, decida de forma embasada se o `momento_operacional` é 'recuperacao', 'estavel' ou 'deteriorando'.\n"
                 "3. Chame `buscar_dados_mercado_yfinance` APENAS para obter o `preco_atual`. "
                 "Para o número de ações, use EXCLUSIVAMENTE o `numero_total_acoes` que veio extraído do PDF mais recente.\n"
-                "4. Avalie a evolução dos trimestres extraídos e defina o `momento_operacional` ('recuperacao', 'estavel' ou 'deteriorando'). "
+                "4. Chame a ferramenta `buscar_medias_historicas_yfinance` para descobrir qual é o ROE médio real da empresa e `buscar_payout_medio_historico_yfinance` (para o Payout).\n"
+                "5. Avalie a evolução dos trimestres extraídos e defina o `momento_operacional` ('recuperacao', 'estavel' ou 'deteriorando'). "
                 "Em seguida, chame `projetar_lucro_anual_cenarios` passando a lista de `lucro_liquido_trimestral` em ordem cronológica.\n"
-                "5. Chame `calcular_multiplos_basicos` duas vezes (uma para o lucro anual conservador e outra para o lucro anual mediano), "
+                "6. Chame `calcular_multiplos_basicos` duas vezes (uma para o lucro anual conservador e outra para o lucro anual mediano), "
                 "usando o Patrimônio Líquido e o `numero_total_acoes` do PDF mais recente.\n"
-                "6. Chame `fluxo_de_caixa_futuro_buffet` duas vezes:\n"
-                "   - Execução A (Cenário Conservador): usando o `lucro_anual_conservador`.\n"
-                "   - Execução B (Cenário Mediano): usando o `lucro_anual_mediano`.\n"
+                "7. Chame `fluxo_de_caixa_futuro_buffet` duas vezes:\n"
+                "   - Execução A (Cenário Conservador): Use o lucro conservador, o ROE histórico e o Payout histórico para maior margem de segurança.\n"
+                "   - Execução B (Cenário Mediano): Use o lucro mediano e decida se é melhor usar os parâmetros históricos ou os reportados no PDF recente.\n"
+                # TODO: Pensar em uma taxa de desconto e crescimento perpetuo dinâmicos, talvez baseados no setor ou no histórico da empresa.
+                # "     Talvez pedir para o usuário informar o crescimento perpetuo e a taxa de desconto, ou usar uma média histórica do setor.
                 "   (Use taxa_desconto=0.18, crescimento_perpetuo=0.03, numero_total_acoes extraído do PDF e o ROE/Payout do trimestre mais recente).\n\n"
                 "REGRAS ESTRITAS DE COMPLIANCE E FORMATAÇÃO:\n"
                 "- JAMAIS invente, deduza ou faça contas de cabeça. Use exclusivamente os retornos das ferramentas.\n"
