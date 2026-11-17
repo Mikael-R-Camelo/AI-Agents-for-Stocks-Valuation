@@ -172,3 +172,71 @@ def buscar_medias_historicas_yfinance(ticker: str) -> dict:
 
     except Exception as e:
         return {"erro": f"Falha ao buscar histórico: {e!s}"}
+
+
+@tool
+def buscar_payout_medio_historico_yfinance(ticker: str) -> dict:
+    """
+    Busca o Payout médio (percentual do lucro distribuído aos acionistas)
+    dos últimos 4 anos utilizando os dados de fluxo de caixa do Yahoo Finance.
+    """
+    ticker_yf = (
+        f"{ticker.upper().strip()}.SA"
+        if not ticker.upper().endswith(".SA")
+        else ticker.upper()
+    )
+    acao = yf.Ticker(ticker_yf)
+
+    try:
+        # Puxa a DRE (para o Lucro) e o Fluxo de Caixa (para os Dividendos Pagos)
+        dre = acao.financials
+        fc = acao.cash_flow
+
+        payout_anos = []
+
+        if "Net Income" in dre.index:
+            lucros = dre.loc["Net Income"]
+
+            # Procura a linha de dividendos pagos (o YF usa nomenclaturas diferentes por empresa)
+            linha_dividendos = None
+            for nome in [
+                "Cash Dividends Paid",
+                "Dividends Paid",
+                "Common Stock Dividend Paid",
+            ]:
+                if nome in fc.index:
+                    linha_dividendos = fc.loc[nome]
+                    break
+
+            if linha_dividendos is not None:
+                for ano in lucros.index:
+                    if ano in linha_dividendos.index:
+                        lucro = lucros[ano]
+                        dividendos = linha_dividendos[ano]
+
+                        # Calcula apenas se houve lucro (payout de prejuízo não é sustentável)
+                        if pd.notna(lucro) and pd.notna(dividendos) and lucro > 0:
+                            # Dividendos no FC aparecem como saída de caixa (negativo)
+                            payout_ano = abs(dividendos) / lucro
+
+                            # Trava de segurança: ignorar distorções onde a empresa pagou > 150% do lucro
+                            # Limitamos o payout máximo sustentável em 100% (1.0) para a média
+                            payout_ano = min(float(payout_ano), 1.0)
+                            payout_anos.append(payout_ano)
+
+        if not payout_anos:
+            return {
+                "erro": "Dados de fluxo de caixa insuficientes no Yahoo Finance para calcular o Payout."
+            }
+
+        payout_medio = sum(payout_anos) / len(payout_anos)
+
+        return {
+            "ticker": ticker.upper(),
+            "anos_analisados": len(payout_anos),
+            "payout_medio_historico": round(payout_medio, 4),  # Ex: 0.6000 (60%)
+            "payouts_anuais_identificados": [round(p, 4) for p in payout_anos],
+        }
+
+    except Exception as e:
+        return {"erro": f"Falha ao buscar histórico de Payout: {e!s}"}
