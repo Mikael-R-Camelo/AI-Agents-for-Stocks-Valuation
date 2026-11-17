@@ -29,6 +29,15 @@ class DadosTrimestraisPDF(BaseModel):
     numero_total_acoes: float = Field(
         description="Número TOTAL de ações da companhia (somando ON e PN, se houver). Converta bilhões para o número absoluto (ex: 11178825623.0)."
     )
+    caixa_inicial: float = Field(
+        description="Saldo inicial de 'Caixa e equivalentes de caixa' no início do período em Reais (R$)."
+    )
+    caixa_final: float = Field(
+        description="Saldo final de 'Caixa e equivalentes de caixa' no fim do período em Reais (R$)."
+    )
+    variacao_liquida_caixa: float = Field(
+        description="Aumento ou redução líquida de caixa e equivalentes durante o período em Reais (R$). Pode ser negativo."
+    )
 
 
 def extrair_dados_do_pdf(caminho_pdf: str) -> dict:
@@ -48,4 +57,5 @@ def extrair_dados_do_pdf(caminho_pdf: str) -> dict:
     )
 
     resultado = llm_estruturado.invoke(prompt)
+
     return resultado.model_dump()

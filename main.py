@@ -29,6 +29,7 @@ from tools.market_data import (
     calcular_multiplos_basicos,
     projetar_lucro_anual_cenarios,
 )
+from tools.utils import identificar_setor_pelo_ticker
 from tools.valuation import fluxo_de_caixa_futuro_buffet
 
 # ==========================================
@@ -55,6 +56,8 @@ class AgentState(TypedDict):
     setor: NotRequired[str]
     ticker: NotRequired[str]
     caminhos_pdfs: NotRequired[list[str]]  # Lista com todos os PDFs da subpasta
+    tentativas_extracao: int
+    dados_temporarios: NotRequired[dict]
 
 
 # ==========================================
@@ -136,26 +139,119 @@ def analista_node(state: AgentState):
     return {"messages": [resposta]}
 
 
+def validador_node(state: AgentState):
+    dados = state.get("dados_temporarios", {})
+
+    # Recupera as variáveis contábeis
+    lucro = dados.get("lucro_liquido_trimestral", 0)
+    pl = dados.get("patrimonio_liquido", 1)
+    roe_reportado = dados.get("roe_reportado", 0)
+
+    caixa_inicial = dados.get("caixa_inicial", 0)
+    caixa_final = dados.get("caixa_final", 0)
+    variacao_caixa = dados.get("variacao_liquida_caixa", 0)
+
+    erros_encontrados = []
+
+    # ==========================================
+    # VALIDAÇÃO 1: Consistência do ROE
+    # ==========================================
+    roe_calculado = lucro / pl
+    margem_erro_roe = abs(roe_calculado - roe_reportado)
+
+    # Tolera até 2 pontos percentuais de diferença
+    if margem_erro_roe > 0.02:
+        erros_encontrados.append(
+            f"- ROE: Lucro de {lucro} e PL de {pl} geram um ROE de {roe_calculado:.2%}, "
+            f"mas você extraiu {roe_reportado:.2%}."
+        )
+
+    # ==========================================
+    # VALIDAÇÃO 2: Consistência do Fluxo de Caixa
+    # ==========================================
+    caixa_calculado = caixa_inicial + variacao_caixa
+
+    # Evita divisão por zero
+    referencia = abs(caixa_final) if caixa_final != 0 else 1
+    erro_percentual_caixa = abs(caixa_calculado - caixa_final) / referencia
+
+    # Tolera até 2% de diferença (cobre variação cambial e arredondamentos)
+    if erro_percentual_caixa > 0.02:
+        erros_encontrados.append(
+            f"- CAIXA: Inicial ({caixa_inicial}) + Variação ({variacao_caixa}) "
+            f"resulta em {caixa_calculado}, mas o Final extraído foi {caixa_final}. "
+            "Procure pelo efeito da variação cambial ou corrija os saldos."
+        )
+
+    # ==========================================
+    # ROTEAMENTO
+    # ==========================================
+    if erros_encontrados:
+        print(
+            "[Validador] Falhas matemáticas detectadas. Gerando prompt de correção..."
+        )
+        texto_erros = "\n".join(erros_encontrados)
+
+        msg_correcao = HumanMessage(
+            content=(
+                "ERRO DE VALIDAÇÃO MATEMÁTICA NA EXTRAÇÃO. Revise o documento e corrija os seguintes pontos:\n"
+                f"{texto_erros}\n"
+                "Atenção à escala dos números (milhões/bilhões) e não confunda valores trimestrais com os acumulados do ano."
+            )
+        )
+        return {"messages": [msg_correcao]}
+
+    print("[Validador] Sucesso! ROE e Conciliação de Caixa validados matematicamente.")
+    return {"messages": []}
+
+
+def roteador_validador(state: AgentState) -> str:
+    mensagens = state["messages"]
+    tentativas = state.get("tentativas_extracao", 0)
+
+    # Se a última mensagem for ERRO (HumanMessage com a palavra ERRO)
+    # E ainda não estourou o limite de tentativas, volta pro extrator.
+    if mensagens and "ERRO DE VALIDAÇÃO" in mensagens[-1].content:
+        if tentativas < 3:
+            print(f"[Loop] Retornando ao Extrator (Tentativa {tentativas + 1}/3)...")
+            return "extrator"
+        else:
+            print("[Loop] Limite de tentativas atingido. Seguindo com erro tolerado.")
+            return "analista"
+
+    # Se passou sem erros, segue o pipeline normal
+    return "analista"
+
+
 # ==========================================
 # 4. Construindo e compilando o Grafo
 # ==========================================
 workflow = StateGraph(AgentState)
 
 workflow.add_node("extrator", extrator_node)
+workflow.add_node("validador", validador_node)
 workflow.add_node("analista", analista_node)
 workflow.add_node("ferramentas", ToolNode(ferramentas))
 
 workflow.add_edge(START, "extrator")
-workflow.add_edge("extrator", "analista")
+
+# Do extrator vai OBRIGATORIAMENTE para o Validador
+workflow.add_edge("extrator", "validador")
+
+# Do validador,  ou VOLTA pro extrator, ou AVANÇA pro analista
 workflow.add_conditional_edges(
-    "analista",
-    tools_condition,
-    {"tools": "ferramentas", "__end__": END},
+    "validador", roteador_validador, {"extrator": "extrator", "analista": "analista"}
+)
+
+workflow.add_conditional_edges(
+    "analista", tools_condition, {"tools": "ferramentas", "__end__": END}
 )
 workflow.add_edge("ferramentas", "analista")
 
 app = workflow.compile()
 
+# Mostra o grafo visualmente (opcional)
+# display(Image(app.get_graph().draw_mermaid_png()))
 
 # ==========================================
 # 5. Execução em Lote (Agrupada por Ativo)
@@ -182,17 +278,22 @@ if __name__ == "__main__":
             if not arquivos_pdf:
                 continue
 
+            setor_dinamico = identificar_setor_pelo_ticker(ticker_atual)
+
             print(f"{'=' * 60}")
-            print(f"Ativo: {ticker_atual} | {len(arquivos_pdf)} PDF(s) encontrado(s)")
+            print(
+                f"Ativo: {ticker_atual} | Setor: {setor_dinamico} | {len(arquivos_pdf)} PDF(s) encontrado(s)"
+            )
             print(f"{'=' * 60}")
 
             try:
                 resultado_final = app.invoke(
                     {
                         "messages": [],
-                        "setor": "banco",
+                        "setor": setor_dinamico,
                         "ticker": ticker_atual,
                         "caminhos_pdfs": arquivos_pdf,
+                        "tentativas_extracao": 0,
                     }
                 )
 
