@@ -60,6 +60,16 @@ Para evitar alucinações matemáticas comuns em modelos de linguagem, **toda a 
 
 ---
 
+## 🧠 Metodologias de Valuation Suportadas
+
+O sistema não se baseia em palpites do LLM, mas em modelos matemáticos clássicos da análise fundamentalista ancorados nos dados extraídos:
+
+*   **Fluxo de Caixa Futuro (Estilo Warren Buffett):** Projeta o crescimento sustentável da empresa com base no ROE médio histórico e na taxa de retenção de lucros, descontando os fluxos a uma taxa de custo de capital (Ke) definida (padrão de 18%).
+*   *(Em Breve)* **Valuation por Dividendos (Método Décio Bazin):** O sistema já possui a ferramenta `buscar_payout_medio_historico_yfinance`, preparando o terreno para uma rota alternativa que precifique o teto da ação com base em um *Dividend Yield* mínimo exigido de 6%.
+
+*   *(Em Breve)* **Valuation pelo método de Benjamin Graham**
+---
+
 ## 🛡️ Regras de Compliance
 
 O *System Prompt* do Agente Analista possui travas estritas:
