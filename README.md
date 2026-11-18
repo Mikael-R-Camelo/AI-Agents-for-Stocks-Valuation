@@ -14,13 +14,13 @@ O projeto opera como uma máquina de estados (`StateGraph`) onde uma memória co
   [ Início / Varredura de Pastas ]
                  │
                  ▼ (Identifica Setor via Yahoo Finance)
-        (Nó) EXTRATOR  <──────────────────────────────────────┐
-                 │                                            │
-                 ▼ (JSON Pydantic)                            │
-        (Nó) VALIDADOR (Python Puro)                          │
-                 │                                            │
-                 ▼                                            │
-  (Aresta Condicional) ROTEADOR ──(Erro Contábil / Tent < 3)──┘
+        (Nó) EXTRATOR  <────────────────────────────────────────────┐
+                 │                                                  │
+                 ▼ (JSON Pydantic)                                  │
+        (Nó) VALIDADOR (Python Puro)                                │
+                 │                                                  │
+                 ▼                                                  │
+  (Aresta Condicional) ROTEADOR ──(Erro Contábil / Tentativas < 3)──┘
                  │
          (Matemática OK)
                  │
@@ -78,6 +78,7 @@ AI-Agents-for-Stocks-Valuation/
 ├── tools/
 │   ├── market_data.py        # Ferramentas do Yahoo Finance, múltiplos e projeção anual
 │   └── valuation.py          # Modelo matemático de Fluxo de Caixa (Buffett)
+│   └── utils.py              # Funções auxiliares  
 ├── reports/                  # Diretório de entrada e saída (organizado por Ticker)
 │   └── BBDC3/
 │       ├── 1T26_Release.pdf
