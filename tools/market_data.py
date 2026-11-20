@@ -328,13 +328,37 @@ def buscar_medias_historicas_yfinance(ticker: str) -> dict[str, Any]:
         }
 
 
+def _obter_payout_fallback_info(acao: yf.Ticker) -> float | None:
+    """Obtém `payoutRatio` via ticker.info quando a DFC vier zerada/ausente (ex: JCP em bancos)."""
+    try:
+        info = acao.info or {}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
+
+    if not isinstance(info, dict):
+        return None
+
+    payout_info = _extrair_float_valido(info.get("payoutRatio"))
+    if payout_info is None or payout_info <= 0 or payout_info > _LIMITE_DISTORCAO_PAYOUT:
+        return None
+    return payout_info
+
+
 @tool
 def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
     """
     Busca o Payout médio (percentual do lucro distribuído aos acionistas)
     dos últimos 4 anos utilizando os dados de fluxo de caixa do Yahoo Finance.
+
+    Quando a linha de dividendos na DFC vier ausente ou zerada em todos os anos
+    (comum em bancos brasileiros que distribuem via JCP), aplica fallback para
+    `info["payoutRatio"]`.
+
+    Retorna tanto `payout_medio_observado` (média real dos anos válidos até 150%)
+    quanto `payout_sustentavel` (limitado a 1.0), que deve ser utilizado no valuation DDM.
     """
     try:
+        ticker_limpo = ticker.strip().upper()
         ticker_yf = normalizar_ticker_b3(ticker)
         acao = yf.Ticker(ticker_yf)
 
@@ -344,44 +368,76 @@ def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
         lucros = _buscar_linha_contabil(dre, _ALIASES_LUCRO_LIQUIDO)
         linha_dividendos = _buscar_linha_dividendos(fc)
 
-        if lucros is None or linha_dividendos is None:
-            return {
-                "ticker": ticker.strip().upper(),
-                "erro": "Dados de DRE ou Fluxo de Caixa insuficientes no Yahoo Finance para calcular o Payout.",
-            }
-
-        anos_comuns = [ano for ano in lucros.index if ano in linha_dividendos.index]
-        anos_ordenados = _ordenar_datas_desc(anos_comuns)[:_LIMITE_ANOS_HISTORICOS]
-
-        payout_anos: list[float] = []
+        payout_anos_observados: list[float] = []
         anos_ignorados_distorcao = 0
         anos_com_prejuizo = 0
 
-        for ano in anos_ordenados:
-            lucro = _extrair_float_valido(lucros[ano])
-            dividendos = _extrair_float_valido(linha_dividendos[ano])
+        if lucros is not None and linha_dividendos is not None:
+            anos_comuns = [
+                ano for ano in lucros.index if ano in linha_dividendos.index
+            ]
+            anos_ordenados = _ordenar_datas_desc(anos_comuns)[:_LIMITE_ANOS_HISTORICOS]
 
-            if lucro is None or dividendos is None:
-                continue
+            for ano in anos_ordenados:
+                lucro = _extrair_float_valido(lucros[ano])
+                dividendos = _extrair_float_valido(linha_dividendos[ano])
 
-            if lucro <= 0:
-                anos_com_prejuizo += 1
-                continue
+                if lucro is None or dividendos is None:
+                    continue
 
-            # Dividendos na DFC aparecem como saída de caixa (negativo)
-            payout_bruto = abs(dividendos) / lucro
+                if lucro <= 0:
+                    anos_com_prejuizo += 1
+                    continue
 
-            # Ignora distorções não-recorrentes onde o payout superou 150% do lucro
-            if payout_bruto > _LIMITE_DISTORCAO_PAYOUT:
-                anos_ignorados_distorcao += 1
-                continue
+                # Dividendos na DFC aparecem como saída de caixa (negativo)
+                payout_bruto = abs(dividendos) / lucro
 
-            # Limita o payout sustentável máximo em 100% (1.0) para compor a média
-            payout_anos.append(min(payout_bruto, 1.0))
+                # Ignora distorções não-recorrentes onde o payout superou 150% do lucro
+                if payout_bruto > _LIMITE_DISTORCAO_PAYOUT:
+                    anos_ignorados_distorcao += 1
+                    continue
 
-        if not payout_anos:
+                payout_anos_observados.append(payout_bruto)
+
+        dfc_zerada_ou_ausente = (
+            linha_dividendos is None
+            or (
+                bool(payout_anos_observados)
+                and all(p == 0.0 for p in payout_anos_observados)
+            )
+        )
+
+        if dfc_zerada_ou_ausente:
+            payout_info = _obter_payout_fallback_info(acao)
+            if payout_info is not None:
+                payout_sustentavel = min(payout_info, 1.0)
+                return {
+                    "ticker": ticker_limpo,
+                    "fonte_payout": "yfinance_info_payoutRatio_fallback",
+                    "anos_analisados": len(payout_anos_observados),
+                    "anos_ignorados_distorcao": anos_ignorados_distorcao,
+                    "anos_com_prejuizo": anos_com_prejuizo,
+                    "payout_medio_observado": round(payout_info, 4),
+                    "payout_sustentavel": round(payout_sustentavel, 4),
+                    "payout_limitado_para_valuation": payout_info > 1.0,
+                    "payouts_anuais_observados": [
+                        round(p, 4) for p in payout_anos_observados
+                    ],
+                    "aviso": (
+                        "Linha de dividendos na DFC do Yahoo Finance retornou zerada/ausente "
+                        "(comum em empresas B3 com JCP); utilizado fallback info['payoutRatio']."
+                    ),
+                }
+
+        if lucros is None or linha_dividendos is None:
             return {
-                "ticker": ticker.strip().upper(),
+                "ticker": ticker_limpo,
+                "erro": "Dados de DRE ou Fluxo de Caixa insuficientes no Yahoo Finance para calcular o Payout.",
+            }
+
+        if not payout_anos_observados:
+            return {
+                "ticker": ticker_limpo,
                 "erro": (
                     "Dados válidos de fluxo de caixa insuficientes no Yahoo Finance para calcular o Payout "
                     f"(anos ignorados por distorção >150%: {anos_ignorados_distorcao}, "
@@ -389,15 +445,23 @@ def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
                 ),
             }
 
-        payout_medio = sum(payout_anos) / len(payout_anos)
+        payout_medio_observado = sum(payout_anos_observados) / len(
+            payout_anos_observados
+        )
+        payout_sustentavel = min(payout_medio_observado, 1.0)
 
         return {
-            "ticker": ticker.strip().upper(),
-            "anos_analisados": len(payout_anos),
+            "ticker": ticker_limpo,
+            "fonte_payout": "dfc_yfinance",
+            "anos_analisados": len(payout_anos_observados),
             "anos_ignorados_distorcao": anos_ignorados_distorcao,
             "anos_com_prejuizo": anos_com_prejuizo,
-            "payout_medio_historico": round(payout_medio, 4),
-            "payouts_anuais_identificados": [round(p, 4) for p in payout_anos],
+            "payout_medio_observado": round(payout_medio_observado, 4),
+            "payout_sustentavel": round(payout_sustentavel, 4),
+            "payout_limitado_para_valuation": payout_medio_observado > 1.0,
+            "payouts_anuais_observados": [
+                round(p, 4) for p in payout_anos_observados
+            ],
         }
 
     except Exception as e:

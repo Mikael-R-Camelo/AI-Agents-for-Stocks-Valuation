@@ -3,7 +3,6 @@ from typing import Any
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
-
 from tools.utils import obter_modelo_gemini
 
 

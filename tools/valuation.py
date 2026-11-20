@@ -3,7 +3,7 @@ import math
 from langchain_core.tools import tool
 
 TAXA_DESCONTO_PADRAO = 0.145
-CRESCIMENTO_PERPETUO_PADRAO = 0.05
+CRESCIMENTO_PERPETUO_PADRAO = 0.04
 
 
 @tool
