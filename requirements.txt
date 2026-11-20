@@ -3,6 +3,7 @@ python-dotenv
 
 # Ecossistema LangChain e LangGraph
 langgraph
+langchain-core
 langchain-community
 
 # Integração oficial com a API do Google Gemini
@@ -11,8 +12,9 @@ langchain-google-genai
 # Leitura e extração de PDFs
 pypdf
 
-# Estruturação rigorosa de dados (JSON) para o agente extrator
+# Estruturação  de dados (JSON) e schemas de auditoria
 pydantic
 
-# Consulta de dados financeiros
+# Consulta de dados financeiros e manipulação de tabelas contábeis
 yfinance
+pandas

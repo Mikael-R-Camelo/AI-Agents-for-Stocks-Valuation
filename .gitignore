@@ -1,2 +1,12 @@
 .env
 Diretrizes-AI.md
+
+# Python e ambientes virtuais
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Caches de testes e linter
+.pytest_cache/
+.ruff_cache/

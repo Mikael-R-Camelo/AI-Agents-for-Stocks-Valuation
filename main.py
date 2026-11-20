@@ -7,12 +7,20 @@ from pathlib import Path
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from agents.compliance import (
+    MAX_TENTATIVAS_COMPLIANCE,
+    anexar_alerta_compliance,
+    auditar_compliance_relatorio,
+    extrair_texto_mensagem,
+    montar_feedback_compliance,
+)
 from agents.extrator import extrair_dados_do_pdf
+from agents.prompts import montar_prompt_sistema_analista
 from agents.sector_protocols import obter_protocolo
 from tools.market_data import (
     buscar_dados_mercado_yfinance,
@@ -26,11 +34,7 @@ from tools.utils import (
     identificar_setor_pelo_ticker,
     obter_modelo_gemini,
 )
-from tools.valuation import (
-    CRESCIMENTO_PERPETUO_PADRAO,
-    TAXA_DESCONTO_PADRAO,
-    fluxo_de_caixa_futuro_buffet,
-)
+from tools.valuation import fluxo_de_caixa_futuro_buffet
 
 load_dotenv()
 
@@ -86,6 +90,8 @@ class AgentState(TypedDict):
     dados_extraidos: NotRequired[dict[str, dict[str, Any]]]
     erros_validacao: NotRequired[dict[str, list[str]]]
     validacao_concluida: NotRequired[bool]
+    tentativas_compliance: NotRequired[int]
+    violacoes_compliance: NotRequired[list[str]]
 
 
 # ==========================================
@@ -342,45 +348,62 @@ def analista_node(state: AgentState) -> dict[str, Any]:
     if not any(isinstance(m, SystemMessage) for m in mensagens):
         protocolo = obter_protocolo(state.get("setor", "geral"))
         prompt_sistema = SystemMessage(
-            content=(
-                f"Você é um analista fundamentalista sênior especializado em {protocolo.nome}. "
-                f"{protocolo.instrucoes}\n\n"
-                "ROTEIRO OBRIGATÓRIO DE EXECUÇÃO DE FERRAMENTAS:\n"
-                "1. Leia a 'visao_da_gestao' e o 'resumo_momento_operacional' que vieram do extrator.\n"
-                "2. Baseado no tom da diretoria (otimista/cauteloso) e na evolução dos trimestres, "
-                "defina de forma embasada o `momento_operacional` ('recuperacao', 'estavel' ou 'deteriorando').\n"
-                "3. Chame `buscar_dados_mercado_yfinance` para obter o `preco_atual`. "
-                "Para o número de ações e Patrimônio Líquido, use EXCLUSIVAMENTE `numero_total_acoes` e "
-                "`patrimonio_liquido` extraídos do PDF mais recente.\n"
-                "4. Chame `buscar_medias_historicas_yfinance` (ROE médio histórico) e "
-                "`buscar_payout_medio_historico_yfinance` (que retorna `payout_medio_observado` e `payout_sustentavel` limitado a 1.0).\n"
-                "5. Chame `projetar_lucro_anual_cenarios` passando a lista de `lucro_liquido_trimestral` "
-                "em ordem cronológica e o `momento_operacional` definido no passo 2.\n"
-                "6. Chame `calcular_multiplos_basicos` duas vezes (uma para o lucro anual conservador e outra para o mediano), "
-                "usando `patrimonio_liquido` e `numero_total_acoes` do PDF mais recente.\n"
-                "7. Chame `fluxo_de_caixa_futuro_buffet` (modelo DDM de 2 estágios com convergência na perpetuidade) duas vezes, sempre com "
-                f"`taxa_desconto={TAXA_DESCONTO_PADRAO}`, `crescimento_perpetuo={CRESCIMENTO_PERPETUO_PADRAO}` "
-                "e `num_acoes` igual ao `numero_total_acoes` do PDF mais recente:\n"
-                "   - Execução A (Cenário Conservador): Use `lucro_anual_conservador`, `roe_medio_historico` e `payout_sustentavel` "
-                "(sempre limitado a 1.0 no DDM; caso algum dado histórico falhe no Yahoo Finance ou `payout_sustentavel` seja 0, "
-                "use `roe_reportado`/`payout_estimado` do PDF mais recente limitado a 1.0 e informe).\n"
-                "   - Execução B (Cenário Mediano): Use `lucro_anual_mediano` e escolha justificadamente entre os parâmetros históricos "
-                "(usando `payout_sustentavel`) ou `roe_reportado`/`payout_estimado` do PDF mais recente (limitado a 1.0).\n\n"
-                "REGRAS ESTRITAS DE COMPLIANCE E FORMATAÇÃO:\n"
-                "- JAMAIS invente, deduza ou faça contas de cabeça. Use exclusivamente os retornos das ferramentas.\n"
-                "- JAMAIS use palavras de recomendação ('Compra', 'Venda', 'Manter', 'Comprar', 'Vender'). "
-                "Apenas apresente a diferença percentual (Margem de Segurança / Desconto) entre o Preço Atual e o Preço Justo de cada cenário.\n"
-                "- Estruture a resposta em Markdown limpo, iniciando com uma Tabela Comparativa lado a lado: "
-                "Colunas: [Métrica | Cenário Conservador | Cenário Mediano | Referência Atual].\n"
-                "- Crie uma seção 'Perspectivas da Gestão' resumindo o que a diretoria reportou nos documentos "
-                "e se o tom justifica aplicar o cenário conservador ou mediano."
-            )
+            content=montar_prompt_sistema_analista(protocolo)
         )
         mensagens = [prompt_sistema, *mensagens]
 
     print("[Analista] Processando dados e acionando ferramentas...")
     resposta = _obter_model_with_tools().invoke(mensagens)
     return {"messages": [resposta]}
+
+
+def compliance_node(state: AgentState) -> dict[str, Any]:
+    """Audita deterministicamente o relatório final contra recomendações explícitas."""
+    mensagens = state.get("messages") or []
+    if not mensagens:
+        return {"violacoes_compliance": []}
+
+    texto_relatorio = extrair_texto_mensagem(mensagens[-1].content)
+    resultado = auditar_compliance_relatorio(texto_relatorio)
+
+    if resultado.aprovado:
+        print("[Compliance] Relatório aprovado sem recomendações explícitas.")
+        return {"violacoes_compliance": []}
+
+    tentativas = state.get("tentativas_compliance", 0) + 1
+    if tentativas <= MAX_TENTATIVAS_COMPLIANCE:
+        print(
+            f"[Compliance] Violação detectada ({len(resultado.violacoes)}). "
+            f"Solicitando reescrita limpa (Tentativa {tentativas}/{MAX_TENTATIVAS_COMPLIANCE})..."
+        )
+        msg_correcao = HumanMessage(
+            content=montar_feedback_compliance(resultado.violacoes)
+        )
+        return {
+            "messages": [msg_correcao],
+            "tentativas_compliance": tentativas,
+            "violacoes_compliance": resultado.violacoes,
+        }
+
+    print(
+        "[Compliance] Limite de reescritas atingido com violações pendentes. "
+        "Registrando alerta explícito no topo do relatório."
+    )
+    texto_com_alerta = anexar_alerta_compliance(texto_relatorio, resultado.violacoes)
+    return {
+        "messages": [AIMessage(content=texto_com_alerta)],
+        "tentativas_compliance": tentativas,
+        "violacoes_compliance": resultado.violacoes,
+    }
+
+
+def roteador_compliance(state: AgentState) -> str:
+    violacoes = state.get("violacoes_compliance") or []
+    tentativas = state.get("tentativas_compliance", 0)
+
+    if violacoes and tentativas <= MAX_TENTATIVAS_COMPLIANCE:
+        return "analista"
+    return "fim"
 
 
 # ==========================================
@@ -392,6 +415,7 @@ workflow.add_node("extrator", extrator_node)
 workflow.add_node("validador", validador_node)
 workflow.add_node("analista", analista_node)
 workflow.add_node("ferramentas", ToolNode(ferramentas))
+workflow.add_node("compliance", compliance_node)
 
 workflow.add_edge(START, "extrator")
 
@@ -405,10 +429,17 @@ workflow.add_conditional_edges(
     {"extrator": "extrator", "analista": "analista", "fim": END},
 )
 
+# Do analista, chama ferramentas ou segue para o guardrail determinístico de compliance
 workflow.add_conditional_edges(
-    "analista", tools_condition, {"tools": "ferramentas", "__end__": END}
+    "analista", tools_condition, {"tools": "ferramentas", "__end__": "compliance"}
 )
 workflow.add_edge("ferramentas", "analista")
+
+workflow.add_conditional_edges(
+    "compliance",
+    roteador_compliance,
+    {"analista": "analista", "fim": END},
+)
 
 app = workflow.compile()
 
@@ -458,6 +489,8 @@ if __name__ == "__main__":
                         "dados_extraidos": {},
                         "erros_validacao": {},
                         "validacao_concluida": False,
+                        "tentativas_compliance": 0,
+                        "violacoes_compliance": [],
                     }
                 )
 
@@ -468,16 +501,7 @@ if __name__ == "__main__":
                     )
                     continue
 
-                # Extrai o texto puro (tratando caso o Gemini devolva lista de blocos ou string direta)
-                conteudo_bruto = mensagens_finais[-1].content
-                if isinstance(conteudo_bruto, list):
-                    texto_relatorio = "\n".join(
-                        bloco.get("text", "")
-                        for bloco in conteudo_bruto
-                        if isinstance(bloco, dict)
-                    )
-                else:
-                    texto_relatorio = str(conteudo_bruto)
+                texto_relatorio = extrair_texto_mensagem(mensagens_finais[-1].content)
 
                 # Salva o relatório em Markdown dentro da pasta da ação
                 caminho_md = pasta_ticker / f"Valuation_{ticker_atual}.md"
