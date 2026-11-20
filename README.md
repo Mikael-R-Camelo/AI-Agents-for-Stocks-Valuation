@@ -68,6 +68,7 @@ O sistema não se baseia em palpites do LLM, mas em modelos matemáticos clássi
 *   *(Em Breve)* **Valuation por Dividendos (Método Décio Bazin):** O sistema já possui a ferramenta `buscar_payout_medio_historico_yfinance`, preparando o terreno para uma rota alternativa que precifique o teto da ação com base em um *Dividend Yield* mínimo exigido de 6%.
 
 *   *(Em Breve)* **Valuation pelo método de Benjamin Graham**
+
 ---
 
 ## 🛡️ Regras de Compliance

@@ -1,41 +1,162 @@
+import math
+import unicodedata
+from typing import Any
+
+import pandas as pd
 import yfinance as yf
 from langchain_core.tools import tool
 
+from tools.utils import normalizar_ticker_b3
+
+_ALIASES_LUCRO_LIQUIDO = [
+    "Net Income",
+    "Net Income Common Stockholders",
+    "Net Income Continuous Operations",
+    "Net Income Including Noncontrolling Interests",
+]
+
+_ALIASES_PATRIMONIO_LIQUIDO = [
+    "Stockholders Equity",
+    "Common Stock Equity",
+    "Total Equity Gross Minority Interest",
+]
+
+_ALIASES_DIVIDENDOS_TOTAIS = [
+    "Cash Dividends Paid",
+    "Dividends Paid",
+    "Payment Of Dividends",
+]
+
+_LIMITE_ANOS_HISTORICOS = 4
+_LIMITE_DISTORCAO_PAYOUT = 1.50
+
+
+def _extrair_float_valido(valor: Any) -> float | None:
+    """Converte um valor para float finito ou retorna None se inválido/NaN."""
+    if valor is None or isinstance(valor, bool) or pd.isna(valor):
+        return None
+    try:
+        numero = float(valor)
+    except (TypeError, ValueError):
+        return None
+    return numero if math.isfinite(numero) else None
+
+
+def _normalizar_texto_chave(texto: str) -> str:
+    """Remove acentos, espaços extras e converte para minúsculas."""
+    sem_acento = "".join(
+        c
+        for c in unicodedata.normalize("NFKD", texto.strip().lower())
+        if not unicodedata.combining(c)
+    )
+    return sem_acento
+
+
+def _aplicar_estresse_conservador(valor: float, percentual: float) -> float:
+    """Aplica estresse conservador: reduz lucros positivos e agrava prejuízos negativos."""
+    if valor >= 0:
+        return valor * (1.0 - percentual)
+    return valor * (1.0 + percentual)
+
+
+def _buscar_linha_contabil(
+    df: pd.DataFrame | None, aliases: list[str]
+) -> pd.Series | None:
+    """Localiza a primeira linha contábil disponível entre os aliases informados."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return None
+
+    for nome in aliases:
+        if nome in df.index:
+            linha = df.loc[nome]
+            if isinstance(linha, pd.DataFrame):
+                return linha.iloc[0]
+            return linha
+    return None
+
+
+def _buscar_linha_dividendos(fc: pd.DataFrame | None) -> pd.Series | None:
+    """Localiza linha agregada de dividendos pagos ou soma classes ON/PN na DFC."""
+    linha_total = _buscar_linha_contabil(fc, _ALIASES_DIVIDENDOS_TOTAIS)
+    if linha_total is not None:
+        return linha_total
+
+    linha_on = _buscar_linha_contabil(fc, ["Common Stock Dividend Paid"])
+    linha_pn = _buscar_linha_contabil(fc, ["Preferred Stock Dividend Paid"])
+
+    if linha_on is not None and linha_pn is not None:
+        return linha_on.fillna(0.0) + linha_pn.fillna(0.0)
+    return linha_on if linha_on is not None else linha_pn
+
+
+def _ordenar_datas_desc(indices: list[Any]) -> list[Any]:
+    """Ordena colunas de datas contábeis do mais recente para o mais antigo."""
+    try:
+        return sorted(indices, reverse=True)
+    except TypeError:
+        return list(indices)
+
 
 @tool
-def buscar_dados_mercado_yfinance(ticker: str) -> dict:
-    """Busca a cotação atual e o número total de ações na B3 via Yahoo Finance."""
-    # Na B3, o Yahoo Finance exige o sufixo .SA (ex: BBDC3.SA)
-    ticker_yf = (
-        f"{ticker.upper().strip()}.SA"
-        if not ticker.upper().endswith(".SA")
-        else ticker.upper()
-    )
+def buscar_dados_mercado_yfinance(ticker: str) -> dict[str, Any]:
+    """
+    Busca EXCLUSIVAMENTE a cotação atual de mercado (preço e moeda) na B3 via Yahoo Finance.
+    Não retorna número de ações nem VPA para evitar distorções de classes ON/PN — utilize
+    sempre `numero_total_acoes` e `patrimonio_liquido` extraídos do PDF oficial.
+    """
+    try:
+        ticker_yf = normalizar_ticker_b3(ticker)
+        acao = yf.Ticker(ticker_yf)
 
-    acao = yf.Ticker(ticker_yf)
-    info = acao.info
+        info = acao.info or {}
+        if not isinstance(info, dict):
+            info = {}
 
-    preco_atual = info.get("currentPrice") or info.get("regularMarketPrice") or 0.0
-    # Tenta pegar o total de ações; se falhar em PN/ON, calcula via Market Cap / Preço
-    num_acoes = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
-    market_cap = info.get("marketCap", 0.0)
+        preco_atual: float | None = None
+        for campo in ("currentPrice", "regularMarketPrice", "previousClose"):
+            candidato = _extrair_float_valido(info.get(campo))
+            if candidato is not None and candidato > 0:
+                preco_atual = candidato
+                break
 
-    if not num_acoes and preco_atual > 0 and market_cap > 0:
-        num_acoes = market_cap / preco_atual
+        if preco_atual is None:
+            fast_info = getattr(acao, "fast_info", None)
+            if fast_info is not None:
+                for campo in ("lastPrice", "previousClose"):
+                    try:
+                        candidato = _extrair_float_valido(fast_info.get(campo))
+                    except Exception:
+                        candidato = _extrair_float_valido(
+                            getattr(fast_info, campo, None)
+                        )
+                    if candidato is not None and candidato > 0:
+                        preco_atual = candidato
+                        break
 
-    return {
-        "ticker": ticker.upper(),
-        "preco_atual": round(float(preco_atual), 2),
-        "num_acoes_total": float(num_acoes) if num_acoes else 0.0,
-        "valor_patrimonial_por_acao_vpa": info.get("bookValue", 0.0),
-    }
+        if preco_atual is None:
+            return {
+                "ticker": ticker.strip().upper(),
+                "erro": "Não foi possível obter cotação válida no Yahoo Finance.",
+            }
+
+        return {
+            "ticker": ticker.strip().upper(),
+            "preco_atual": round(preco_atual, 2),
+            "moeda": str(info.get("currency") or "BRL"),
+        }
+
+    except Exception as e:
+        return {
+            "ticker": ticker.strip().upper(),
+            "erro": f"Falha ao buscar cotação no Yahoo Finance: {e!s}",
+        }
 
 
 @tool
 def projetar_lucro_anual_cenarios(
     lucros_trimestrais_realizados: list[float],
     momento_operacional: str = "estavel",
-) -> dict:
+) -> dict[str, Any]:
     """
     Calcula o lucro anual projetado em dois cenários (Conservador e Mediano)
     a partir de uma lista com os lucros de 1, 2, 3 ou 4 trimestres do ano.
@@ -48,44 +169,60 @@ def projetar_lucro_anual_cenarios(
     if n == 0 or n > 4:
         raise ValueError("A lista deve conter entre 1 e 4 trimestres.")
 
-    soma_realizada = sum(lucros_trimestrais_realizados)
+    lucros_validos: list[float] = []
+    for valor in lucros_trimestrais_realizados:
+        numero = _extrair_float_valido(valor)
+        if numero is None:
+            raise ValueError(
+                "Todos os valores em lucros_trimestrais_realizados devem ser números finitos."
+            )
+        lucros_validos.append(numero)
+
+    momento_norm = _normalizar_texto_chave(momento_operacional)
+    if momento_norm not in {"recuperacao", "estavel", "deteriorando"}:
+        raise ValueError(
+            f"momento_operacional inválido: '{momento_operacional}'. "
+            "Use 'recuperacao', 'estavel' ou 'deteriorando'."
+        )
+
+    soma_realizada = sum(lucros_validos)
     faltantes = 4 - n
 
     if faltantes == 0:
-        return {
-            "trimestres_contabilizados": 4,
-            "lucro_anual_conservador": soma_realizada
-            * 0.95,  # Margem de segurança de 5%
-            "lucro_anual_mediano": soma_realizada,
-        }
-
-    media_trimestral = soma_realizada / n
-    pior_trimestre = min(lucros_trimestrais_realizados)
-    ultimo_trimestre = lucros_trimestrais_realizados[-1]
-
-    # Lógica baseada no momento operacional identificado pelo Agente
-    if momento_operacional == "recuperacao":
-        # Em turnaround (ex: Bradesco melhorando ROE a cada tri):
-        # Conservador = assume que os próximos voltam para a média do ano
-        # Mediano = assume que mantém o ritmo do último trimestre (Run-rate atual)
-        proj_conservadora = soma_realizada + (media_trimestral * faltantes)
-        proj_mediana = soma_realizada + (ultimo_trimestre * faltantes)
-    elif momento_operacional == "deteriorando":
-        # Conservador = pior trimestre com corte adicional de 10%
-        # Mediano = repete o pior/último trimestre
-        proj_conservadora = soma_realizada + ((pior_trimestre * 0.90) * faltantes)
-        proj_mediana = soma_realizada + (pior_trimestre * faltantes)
+        proj_conservadora = _aplicar_estresse_conservador(soma_realizada, 0.05)
+        proj_mediana = soma_realizada
     else:
-        # Estável:
-        # Conservador = repete o pior trimestre do ano
-        # Mediano = repete a média dos trimestres realizados
-        proj_conservadora = soma_realizada + (pior_trimestre * faltantes)
-        proj_mediana = soma_realizada + (media_trimestral * faltantes)
+        media_trimestral = soma_realizada / n
+        pior_trimestre = min(lucros_validos)
+        ultimo_trimestre = lucros_validos[-1]
+
+        if momento_norm == "recuperacao":
+            # Conservador = trimestres faltantes voltam à média do ano
+            # Mediano = mantém o run-rate do último trimestre
+            proj_conservadora = soma_realizada + (media_trimestral * faltantes)
+            proj_mediana = soma_realizada + (ultimo_trimestre * faltantes)
+        elif momento_norm == "deteriorando":
+            # Conservador = pior trimestre agravado em 10%
+            # Mediano = repete o pior trimestre
+            pior_estressado = _aplicar_estresse_conservador(pior_trimestre, 0.10)
+            proj_conservadora = soma_realizada + (pior_estressado * faltantes)
+            proj_mediana = soma_realizada + (pior_trimestre * faltantes)
+        else:
+            # Estável:
+            # Conservador = repete o pior trimestre do ano
+            # Mediano = repete a média dos trimestres realizados
+            proj_conservadora = soma_realizada + (pior_trimestre * faltantes)
+            proj_mediana = soma_realizada + (media_trimestral * faltantes)
+
+        # Invariante: cenário conservador nunca pode ser mais otimista que o mediano
+        if proj_conservadora > proj_mediana:
+            proj_conservadora = proj_mediana
 
     return {
         "trimestres_realizados": n,
         "trimestres_projetados": faltantes,
-        "soma_acumulada_ano": soma_realizada,
+        "momento_operacional": momento_norm,
+        "soma_acumulada_ano": round(soma_realizada, 2),
         "lucro_anual_conservador": round(proj_conservadora, 2),
         "lucro_anual_mediano": round(proj_mediana, 2),
     }
@@ -97,146 +234,174 @@ def calcular_multiplos_basicos(
     lucro_anual: float,
     patrimonio_liquido: float,
     num_acoes: float,
-) -> dict:
-    """Calcula LPA, VPA, P/L, P/VP e ROE de forma determinística."""
+) -> dict[str, float | None]:
+    """
+    Calcula LPA, VPA, P/L, P/VP e ROE de forma determinística.
+    Utilize exclusivamente `patrimonio_liquido` e `num_acoes` extraídos do PDF oficial.
+    Retorna None para múltiplos não aplicáveis (ex: P/L em caso de prejuízo).
+    """
+    for nome, valor in {
+        "preco_atual": preco_atual,
+        "lucro_anual": lucro_anual,
+        "patrimonio_liquido": patrimonio_liquido,
+        "num_acoes": num_acoes,
+    }.items():
+        if _extrair_float_valido(valor) is None:
+            raise ValueError(f"Parâmetro '{nome}' deve ser um número finito válido.")
+
+    if num_acoes <= 0:
+        raise ValueError(
+            "num_acoes deve ser estritamente positivo (> 0) e extraído do PDF oficial."
+        )
+    if preco_atual <= 0:
+        raise ValueError("preco_atual deve ser estritamente positivo (> 0).")
+
     lpa = lucro_anual / num_acoes
     vpa = patrimonio_liquido / num_acoes
-    pl = preco_atual / lpa if lpa > 0 else 0.0
-    pvp = preco_atual / vpa if vpa > 0 else 0.0
-    roe = lucro_anual / patrimonio_liquido if patrimonio_liquido > 0 else 0.0
+    pl = round(preco_atual / lpa, 2) if lpa > 0 else None
+    pvp = round(preco_atual / vpa, 2) if vpa > 0 else None
+    roe = (
+        round(lucro_anual / patrimonio_liquido, 4) if patrimonio_liquido > 0 else None
+    )
 
     return {
         "LPA": round(lpa, 2),
         "VPA": round(vpa, 2),
-        "P_L": round(pl, 2),
-        "P_VP": round(pvp, 2),
-        "ROE_calculado": round(roe, 4),
+        "P_L": pl,
+        "P_VP": pvp,
+        "ROE_calculado": roe,
     }
 
 
-import pandas as pd
-from langchain_core.tools import tool
-
-
 @tool
-def buscar_medias_historicas_yfinance(ticker: str) -> dict:
+def buscar_medias_historicas_yfinance(ticker: str) -> dict[str, Any]:
     """
     Busca o ROE médio (Retorno sobre Patrimônio Líquido)
     dos últimos 4 anos utilizando os dados contábeis anuais do Yahoo Finance.
     """
-    ticker_yf = (
-        f"{ticker.upper().strip()}.SA"
-        if not ticker.upper().endswith(".SA")
-        else ticker.upper()
-    )
-    acao = yf.Ticker(ticker_yf)
-
     try:
-        # Puxa a DRE (Lucro) e o Balanço Patrimonial (Patrimônio) anuais
+        ticker_yf = normalizar_ticker_b3(ticker)
+        acao = yf.Ticker(ticker_yf)
+
         dre = acao.financials
         bp = acao.balance_sheet
 
-        roe_anos = []
+        lucros = _buscar_linha_contabil(dre, _ALIASES_LUCRO_LIQUIDO)
+        patrimonios = _buscar_linha_contabil(bp, _ALIASES_PATRIMONIO_LIQUIDO)
 
-        # Verifica se as linhas contábeis padrão existem no ticker
-        if "Net Income" in dre.index and "Stockholders Equity" in bp.index:
-            lucros = dre.loc["Net Income"]
-            patrimonios = bp.loc["Stockholders Equity"]
+        if lucros is None or patrimonios is None:
+            return {
+                "ticker": ticker.strip().upper(),
+                "erro": "Dados contábeis (DRE/Balanço) indisponíveis no Yahoo Finance para calcular o ROE.",
+            }
 
-            # Itera sobre as colunas (que representam os anos)
-            for ano in lucros.index:
-                if ano in patrimonios.index:
-                    lucro = lucros[ano]
-                    patrimonio = patrimonios[ano]
+        anos_comuns = [ano for ano in lucros.index if ano in patrimonios.index]
+        anos_ordenados = _ordenar_datas_desc(anos_comuns)[:_LIMITE_ANOS_HISTORICOS]
 
-                    # Filtra valores vazios (NaN) e garante que o patrimônio é positivo
-                    if pd.notna(lucro) and pd.notna(patrimonio) and patrimonio > 0:
-                        roe_ano = lucro / patrimonio
-                        roe_anos.append(roe_ano)
+        roe_anos: list[float] = []
+        for ano in anos_ordenados:
+            lucro = _extrair_float_valido(lucros[ano])
+            patrimonio = _extrair_float_valido(patrimonios[ano])
+
+            if lucro is not None and patrimonio is not None and patrimonio > 0:
+                roe_anos.append(lucro / patrimonio)
 
         if not roe_anos:
             return {
-                "erro": "Dados contábeis insuficientes no Yahoo Finance para calcular o ROE."
+                "ticker": ticker.strip().upper(),
+                "erro": "Dados contábeis insuficientes no Yahoo Finance para calcular o ROE.",
             }
 
         roe_medio = sum(roe_anos) / len(roe_anos)
 
         return {
-            "ticker": ticker.upper(),
+            "ticker": ticker.strip().upper(),
             "anos_analisados": len(roe_anos),
-            "roe_medio_historico": round(roe_medio, 4),  # Ex: 0.1650 (16,5%)
-            "roes_anuais_identificados": [
-                round(r, 4) for r in roe_anos
-            ],  # Mostra a variação pro agente
+            "roe_medio_historico": round(roe_medio, 4),
+            "roes_anuais_identificados": [round(r, 4) for r in roe_anos],
         }
 
     except Exception as e:
-        return {"erro": f"Falha ao buscar histórico: {e!s}"}
+        return {
+            "ticker": ticker.strip().upper(),
+            "erro": f"Falha ao buscar histórico de ROE: {e!s}",
+        }
 
 
 @tool
-def buscar_payout_medio_historico_yfinance(ticker: str) -> dict:
+def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
     """
     Busca o Payout médio (percentual do lucro distribuído aos acionistas)
     dos últimos 4 anos utilizando os dados de fluxo de caixa do Yahoo Finance.
     """
-    ticker_yf = (
-        f"{ticker.upper().strip()}.SA"
-        if not ticker.upper().endswith(".SA")
-        else ticker.upper()
-    )
-    acao = yf.Ticker(ticker_yf)
-
     try:
-        # Puxa a DRE (para o Lucro) e o Fluxo de Caixa (para os Dividendos Pagos)
+        ticker_yf = normalizar_ticker_b3(ticker)
+        acao = yf.Ticker(ticker_yf)
+
         dre = acao.financials
         fc = acao.cash_flow
 
-        payout_anos = []
+        lucros = _buscar_linha_contabil(dre, _ALIASES_LUCRO_LIQUIDO)
+        linha_dividendos = _buscar_linha_dividendos(fc)
 
-        if "Net Income" in dre.index:
-            lucros = dre.loc["Net Income"]
+        if lucros is None or linha_dividendos is None:
+            return {
+                "ticker": ticker.strip().upper(),
+                "erro": "Dados de DRE ou Fluxo de Caixa insuficientes no Yahoo Finance para calcular o Payout.",
+            }
 
-            # Procura a linha de dividendos pagos (o YF usa nomenclaturas diferentes por empresa)
-            linha_dividendos = None
-            for nome in [
-                "Cash Dividends Paid",
-                "Dividends Paid",
-                "Common Stock Dividend Paid",
-            ]:
-                if nome in fc.index:
-                    linha_dividendos = fc.loc[nome]
-                    break
+        anos_comuns = [ano for ano in lucros.index if ano in linha_dividendos.index]
+        anos_ordenados = _ordenar_datas_desc(anos_comuns)[:_LIMITE_ANOS_HISTORICOS]
 
-            if linha_dividendos is not None:
-                for ano in lucros.index:
-                    if ano in linha_dividendos.index:
-                        lucro = lucros[ano]
-                        dividendos = linha_dividendos[ano]
+        payout_anos: list[float] = []
+        anos_ignorados_distorcao = 0
+        anos_com_prejuizo = 0
 
-                        # Calcula apenas se houve lucro (payout de prejuízo não é sustentável)
-                        if pd.notna(lucro) and pd.notna(dividendos) and lucro > 0:
-                            # Dividendos no FC aparecem como saída de caixa (negativo)
-                            payout_ano = abs(dividendos) / lucro
+        for ano in anos_ordenados:
+            lucro = _extrair_float_valido(lucros[ano])
+            dividendos = _extrair_float_valido(linha_dividendos[ano])
 
-                            # Trava de segurança: ignorar distorções onde a empresa pagou > 150% do lucro
-                            # Limitamos o payout máximo sustentável em 100% (1.0) para a média
-                            payout_ano = min(float(payout_ano), 1.0)
-                            payout_anos.append(payout_ano)
+            if lucro is None or dividendos is None:
+                continue
+
+            if lucro <= 0:
+                anos_com_prejuizo += 1
+                continue
+
+            # Dividendos na DFC aparecem como saída de caixa (negativo)
+            payout_bruto = abs(dividendos) / lucro
+
+            # Ignora distorções não-recorrentes onde o payout superou 150% do lucro
+            if payout_bruto > _LIMITE_DISTORCAO_PAYOUT:
+                anos_ignorados_distorcao += 1
+                continue
+
+            # Limita o payout sustentável máximo em 100% (1.0) para compor a média
+            payout_anos.append(min(payout_bruto, 1.0))
 
         if not payout_anos:
             return {
-                "erro": "Dados de fluxo de caixa insuficientes no Yahoo Finance para calcular o Payout."
+                "ticker": ticker.strip().upper(),
+                "erro": (
+                    "Dados válidos de fluxo de caixa insuficientes no Yahoo Finance para calcular o Payout "
+                    f"(anos ignorados por distorção >150%: {anos_ignorados_distorcao}, "
+                    f"anos com prejuízo: {anos_com_prejuizo})."
+                ),
             }
 
         payout_medio = sum(payout_anos) / len(payout_anos)
 
         return {
-            "ticker": ticker.upper(),
+            "ticker": ticker.strip().upper(),
             "anos_analisados": len(payout_anos),
-            "payout_medio_historico": round(payout_medio, 4),  # Ex: 0.6000 (60%)
+            "anos_ignorados_distorcao": anos_ignorados_distorcao,
+            "anos_com_prejuizo": anos_com_prejuizo,
+            "payout_medio_historico": round(payout_medio, 4),
             "payouts_anuais_identificados": [round(p, 4) for p in payout_anos],
         }
 
     except Exception as e:
-        return {"erro": f"Falha ao buscar histórico de Payout: {e!s}"}
+        return {
+            "ticker": ticker.strip().upper(),
+            "erro": f"Falha ao buscar histórico de Payout: {e!s}",
+        }
