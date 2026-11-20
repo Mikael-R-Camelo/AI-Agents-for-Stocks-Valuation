@@ -1,4 +1,4 @@
-LIMITE_CARACTERES_DOCUMENTO = 150_000
+from config import LIMITE_CARACTERES_DOCUMENTO
 
 
 def montar_prompt_extrator(

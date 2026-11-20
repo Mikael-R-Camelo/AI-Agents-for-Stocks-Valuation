@@ -95,31 +95,45 @@ O pipeline combina travas de *System Prompt* com **auditoria determinística pó
 
 ```text
 AI-Agents-for-Stocks-Valuation/
+├── config.py                     # Configurações centralizadas (Ke, g, limites, cache, logging e factory LLM)
+├── graph/
+│   ├── __init__.py               # Exportações do grafo
+│   ├── state.py                  # Definição de AgentState
+│   ├── nodes.py                  # Nós (extrator, validador, analista, compliance) e roteadores
+│   └── workflow.py               # build_app(llm=None) com injeção de dependência
 ├── agents/
 │   ├── prompts/
 │   │   ├── __init__.py           # Exportação dos construtores de prompts
 │   │   ├── analista_prompt.py    # System Prompt do Analista (interpola Ke e g de valuation.py)
 │   │   └── extrator_prompt.py    # Prompt do Extrator com suporte a feedback corretivo
 │   ├── compliance.py             # Guardrail determinístico de compliance pós-geração (Pydantic)
-│   ├── extrator.py               # Schema Pydantic (DadosTrimestraisPDF) e extração via LLM
+│   ├── extrator.py               # Schema Pydantic, filtragem inteligente de páginas e cache SHA-256
 │   └── sector_protocols.py       # Protocolos setoriais alinhados ao mapeamento do Yahoo Finance
 ├── tools/
 │   ├── market_data.py            # Ferramentas do Yahoo Finance (com fallback JCP), múltiplos e projeção
-│   ├── utils.py                  # Normalização de tickers B3, ordenação cronológica, setor e modelo Gemini
+│   ├── utils.py                  # Ticker B3, cache em memória yfinance, ordenação cronológica e setor
 │   └── valuation.py              # Modelo DDM de 2 Estágios consistente (Ke=14,5%, g=4,0%)
+├── tests/
+│   ├── conftest.py               # Isolamento determinístico de caches e ambiente
+│   ├── test_valuation.py         # DDM de 2 estágios e guardas de domínio
+│   ├── test_market_data.py       # Projeções, múltiplos, mocks yfinance, fallback JCP e cache
+│   ├── test_graph_validation.py  # ROE anualizado, DFC, retry seletivo, filtragem e cache SHA-256
+│   └── test_contracts.py         # Setores/protocolos, prompts dinâmicos e guardrail de compliance
 ├── reports/                      # Diretório de entrada e saída (organizado por Ticker)
 │   └── BBDC3/
 │       ├── Demonstracao-Financeira-1T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-2T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-3T26-Bradesco.pdf
 │       └── Valuation_BBDC3.md    # Relatório gerado automaticamente pelo pipeline
-├── .env                          # Variáveis de ambiente (GOOGLE_API_KEY e opcional GEMINI_MODEL)
+├── .cache/                       # Cache local SHA-256 de extrações aprovadas (ignorado pelo Git)
+├── .env                          # Variáveis de ambiente (GOOGLE_API_KEY, GEMINI_MODEL, USAR_CACHE_PDF)
 ├── .gitignore
-├── main.py                       # Orquestrador do Grafo (LangGraph) e execução em lote
-└── requirements.txt              # Dependências do projeto
+├── main.py                       # Ponto de entrada CLI enxuto (--no-cache) e execução em lote
+├── requirements.txt              # Dependências de produção
+└── requirements-dev.txt          # Dependências de desenvolvimento (ruff, pytest)
 ```
 
-> **💡 Boas Práticas de Documentos:** Priorize colocar os arquivos de **Press Release** (Relatório de Análise Econômica e Financeira) dentro das pastas dos ativos em vez das Demonstrações Financeiras completas (IFRS). O Press Release concentra o Lucro Líquido Recorrente, ROE gerencial e comentários da administração com menor ruído e menor consumo de tokens.
+> **💡 Boas Práticas de Documentos e Otimização:** Priorize arquivos de **Press Release** (Relatório de Análise Econômica e Financeira). Para PDFs extensos que excedam o limite de caracteres, o extrator aplica **rankeamento inteligente de páginas** por palavras-chave contábeis (DRE, Lucro, ROE, PL, Capital Social/Ações, DFC e Guidance), preservando a ordem original das páginas. Extrações **aprovadas** pelo validador são salvas em cache local por hash SHA-256 + versão do schema/modelo (`.cache/extrator/`), reduzindo latência e custo de tokens em re-execuções.
 
 ---
 
@@ -132,12 +146,18 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Para desenvolvimento e testes automatizados:
+```bash
+pip install -r requirements-dev.txt
+```
+
 ### 2. Configurar Variáveis de Ambiente
-Crie um arquivo `.env` na raiz do projeto contendo sua chave do Google AI Studio (e, opcionalmente, o identificador do modelo Gemini):
+Crie um arquivo `.env` na raiz do projeto contendo sua chave do Google AI Studio (e, opcionalmente, modelo e controle de cache):
 ```env
 GOOGLE_API_KEY="sua_chave_aqui"
-# Opcional (padrão funcional mantido: gemini-3.8-flash)
+# Opcionais:
 # GEMINI_MODEL="gemini-3.8-flash"
+# USAR_CACHE_PDF="true"
 ```
 
 ### 3. Adicionar os Relatórios
@@ -147,4 +167,19 @@ Crie uma subpasta dentro de `reports/` utilizando **exatamente o código do tick
 ```bash
 python main.py
 ```
-O terminal exibirá o progresso de extração, validação contábil (com reprocessamento seletivo se houver erro), chamadas de ferramentas e auditoria de compliance. Ao concluir cada ativo, o relatório final estará salvo em `reports/<TICKER>/Valuation_<TICKER>.md`.
+Para ignorar o cache local de PDFs em uma execução específica:
+```bash
+python main.py --no-cache
+```
+O terminal exibirá logs estruturados (`logging`) de extração, validação contábil (com reprocessamento seletivo se houver erro), chamadas de ferramentas e auditoria de compliance. Ao concluir cada ativo, o relatório final estará salvo em `reports/<TICKER>/Valuation_<TICKER>.md`.
+
+---
+
+## 🧪 Qualidade de Código e Testes Automatizados
+
+Toda a suíte em `tests/` é 100% determinística (zero consumo de tokens da API Gemini e sem acesso à rede):
+
+```bash
+ruff check .
+pytest -v
+```

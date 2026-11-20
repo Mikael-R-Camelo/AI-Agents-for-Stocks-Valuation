@@ -1,0 +1,4 @@
+# Ferramentas de qualidade e testes (instalar apenas no venv de desenvolvimento)
+-r requirements.txt
+ruff
+pytest

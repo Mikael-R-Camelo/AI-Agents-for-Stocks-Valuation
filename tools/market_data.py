@@ -1,3 +1,4 @@
+import logging
 import math
 import unicodedata
 from typing import Any
@@ -6,7 +7,9 @@ import pandas as pd
 import yfinance as yf
 from langchain_core.tools import tool
 
-from tools.utils import normalizar_ticker_b3
+from tools.utils import obter_ticker_yfinance
+
+logger = logging.getLogger(__name__)
 
 _ALIASES_LUCRO_LIQUIDO = [
     "Net Income",
@@ -105,8 +108,7 @@ def buscar_dados_mercado_yfinance(ticker: str) -> dict[str, Any]:
     sempre `numero_total_acoes` e `patrimonio_liquido` extraídos do PDF oficial.
     """
     try:
-        ticker_yf = normalizar_ticker_b3(ticker)
-        acao = yf.Ticker(ticker_yf)
+        acao = obter_ticker_yfinance(ticker)
 
         info = acao.info or {}
         if not isinstance(info, dict):
@@ -125,7 +127,7 @@ def buscar_dados_mercado_yfinance(ticker: str) -> dict[str, Any]:
                 for campo in ("lastPrice", "previousClose"):
                     try:
                         candidato = _extrair_float_valido(fast_info.get(campo))
-                    except Exception:
+                    except (AttributeError, KeyError, TypeError, ValueError):
                         candidato = _extrair_float_valido(
                             getattr(fast_info, campo, None)
                         )
@@ -146,6 +148,7 @@ def buscar_dados_mercado_yfinance(ticker: str) -> dict[str, Any]:
         }
 
     except Exception as e:
+        logger.exception("Falha ao buscar cotação no Yahoo Finance para %s", ticker)
         return {
             "ticker": ticker.strip().upper(),
             "erro": f"Falha ao buscar cotação no Yahoo Finance: {e!s}",
@@ -215,8 +218,7 @@ def projetar_lucro_anual_cenarios(
             proj_mediana = soma_realizada + (media_trimestral * faltantes)
 
         # Invariante: cenário conservador nunca pode ser mais otimista que o mediano
-        if proj_conservadora > proj_mediana:
-            proj_conservadora = proj_mediana
+        proj_conservadora = min(proj_conservadora, proj_mediana)
 
     return {
         "trimestres_realizados": n,
@@ -280,8 +282,7 @@ def buscar_medias_historicas_yfinance(ticker: str) -> dict[str, Any]:
     dos últimos 4 anos utilizando os dados contábeis anuais do Yahoo Finance.
     """
     try:
-        ticker_yf = normalizar_ticker_b3(ticker)
-        acao = yf.Ticker(ticker_yf)
+        acao = obter_ticker_yfinance(ticker)
 
         dre = acao.financials
         bp = acao.balance_sheet
@@ -322,6 +323,7 @@ def buscar_medias_historicas_yfinance(ticker: str) -> dict[str, Any]:
         }
 
     except Exception as e:
+        logger.exception("Falha ao buscar histórico de ROE para %s", ticker)
         return {
             "ticker": ticker.strip().upper(),
             "erro": f"Falha ao buscar histórico de ROE: {e!s}",
@@ -332,7 +334,8 @@ def _obter_payout_fallback_info(acao: yf.Ticker) -> float | None:
     """Obtém `payoutRatio` via ticker.info quando a DFC vier zerada/ausente (ex: JCP em bancos)."""
     try:
         info = acao.info or {}
-    except (AttributeError, KeyError, TypeError, ValueError):
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        logger.debug("Fallback info['payoutRatio'] indisponível: %s", exc)
         return None
 
     if not isinstance(info, dict):
@@ -359,8 +362,7 @@ def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
     """
     try:
         ticker_limpo = ticker.strip().upper()
-        ticker_yf = normalizar_ticker_b3(ticker)
-        acao = yf.Ticker(ticker_yf)
+        acao = obter_ticker_yfinance(ticker)
 
         dre = acao.financials
         fc = acao.cash_flow
@@ -399,12 +401,9 @@ def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
 
                 payout_anos_observados.append(payout_bruto)
 
-        dfc_zerada_ou_ausente = (
-            linha_dividendos is None
-            or (
-                bool(payout_anos_observados)
-                and all(p == 0.0 for p in payout_anos_observados)
-            )
+        dfc_zerada_ou_ausente = linha_dividendos is None or (
+            bool(payout_anos_observados)
+            and all(p == 0.0 for p in payout_anos_observados)
         )
 
         if dfc_zerada_ou_ausente:
@@ -465,6 +464,7 @@ def buscar_payout_medio_historico_yfinance(ticker: str) -> dict[str, Any]:
         }
 
     except Exception as e:
+        logger.exception("Falha ao buscar histórico de Payout para %s", ticker)
         return {
             "ticker": ticker.strip().upper(),
             "erro": f"Falha ao buscar histórico de Payout: {e!s}",

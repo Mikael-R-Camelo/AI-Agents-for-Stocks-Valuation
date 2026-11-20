@@ -7,6 +7,7 @@ __pycache__/
 venv/
 .venv/
 
-# Caches de testes e linter
+# Caches de testes, linter e extrator de PDFs
 .pytest_cache/
 .ruff_cache/
+.cache/

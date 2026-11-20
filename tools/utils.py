@@ -1,9 +1,12 @@
-import os
+import logging
 import re
+from functools import lru_cache
 
 import yfinance as yf
 
-DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+from config import DEFAULT_GEMINI_MODEL, obter_modelo_gemini
+
+logger = logging.getLogger(__name__)
 
 MAPA_SETORES_YFINANCE: dict[str, str] = {
     "Financial Services": "banco",
@@ -19,11 +22,16 @@ MAPA_SETORES_YFINANCE: dict[str, str] = {
 
 _REGEX_TRIMESTRE = re.compile(r"([1-4])\s*[TtQq]\s*(\d{2,4})")
 
-
-def obter_modelo_gemini() -> str:
-    """Retorna o modelo Gemini configurado via GEMINI_MODEL (padrão funcional mantido)."""
-    modelo = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip()
-    return modelo or DEFAULT_GEMINI_MODEL
+__all__ = [
+    "DEFAULT_GEMINI_MODEL",
+    "MAPA_SETORES_YFINANCE",
+    "chave_ordenacao_trimestre",
+    "identificar_setor_pelo_ticker",
+    "limpar_cache_yfinance",
+    "normalizar_ticker_b3",
+    "obter_modelo_gemini",
+    "obter_ticker_yfinance",
+]
 
 
 def normalizar_ticker_b3(ticker: str) -> str:
@@ -32,6 +40,21 @@ def normalizar_ticker_b3(ticker: str) -> str:
     if not limpo:
         raise ValueError("Ticker não pode ser vazio.")
     return limpo if limpo.endswith(".SA") else f"{limpo}.SA"
+
+
+@lru_cache(maxsize=64)
+def _obter_ticker_yfinance_por_simbolo(ticker_yf: str) -> yf.Ticker:
+    return yf.Ticker(ticker_yf)
+
+
+def obter_ticker_yfinance(ticker: str) -> yf.Ticker:
+    """Retorna instância cacheada em memória de `yf.Ticker` para o ticker B3 normalizado."""
+    return _obter_ticker_yfinance_por_simbolo(normalizar_ticker_b3(ticker))
+
+
+def limpar_cache_yfinance() -> None:
+    """Limpa o cache em memória de instâncias `yf.Ticker`."""
+    _obter_ticker_yfinance_por_simbolo.cache_clear()
 
 
 def chave_ordenacao_trimestre(trimestre_ref: str) -> tuple[int, int]:
@@ -52,8 +75,7 @@ def chave_ordenacao_trimestre(trimestre_ref: str) -> tuple[int, int]:
 def identificar_setor_pelo_ticker(ticker: str) -> str:
     """Busca o setor no Yahoo Finance e traduz para o protocolo interno do agente."""
     try:
-        ticker_yf = normalizar_ticker_b3(ticker)
-        info = yf.Ticker(ticker_yf).info or {}
+        info = obter_ticker_yfinance(ticker).info or {}
         if not isinstance(info, dict):
             info = {}
 
@@ -62,14 +84,17 @@ def identificar_setor_pelo_ticker(ticker: str) -> str:
 
         setor_traduzido = MAPA_SETORES_YFINANCE.get(setor_yf, "geral")
 
-        print(
-            f"[Sistema] Setor identificado pelo Yahoo: {setor_yf or 'N/A'} "
-            f"({industria_yf or 'N/A'}) -> Protocolo: '{setor_traduzido}'"
+        logger.info(
+            "[Sistema] Setor identificado pelo Yahoo: %s (%s) -> Protocolo: '%s'",
+            setor_yf or "N/A",
+            industria_yf or "N/A",
+            setor_traduzido,
         )
         return setor_traduzido
 
-    except Exception as e:
-        print(
-            f"[Aviso] Falha ao identificar setor para {ticker}: {e!s}. Usando 'geral'."
+    except Exception:
+        logger.exception(
+            "[Aviso] Falha ao identificar setor para %s. Usando protocolo 'geral'.",
+            ticker,
         )
         return "geral"

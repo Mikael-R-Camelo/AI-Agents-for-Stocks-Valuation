@@ -3,7 +3,16 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-MAX_TENTATIVAS_COMPLIANCE = 2
+from config import MAX_TENTATIVAS_COMPLIANCE
+
+__all__ = [
+    "MAX_TENTATIVAS_COMPLIANCE",
+    "ResultadoCompliance",
+    "anexar_alerta_compliance",
+    "auditar_compliance_relatorio",
+    "extrair_texto_mensagem",
+    "montar_feedback_compliance",
+]
 
 _PADROES_RECOMENDACAO_EXPLICITA: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
