@@ -87,6 +87,9 @@ def processar_relatorios(
                     "dados_extraidos": {},
                     "erros_validacao": {},
                     "validacao_concluida": False,
+                    "resultado_quantitativo": {},
+                    "analise_llm_indisponivel": False,
+                    "erro_analista": None,
                     "tentativas_compliance": 0,
                     "violacoes_compliance": [],
                     "usar_cache": cache_ativo,
@@ -105,7 +108,14 @@ def processar_relatorios(
             caminho_md = pasta_ticker / f"Valuation_{ticker_atual}.md"
             caminho_md.write_text(texto_relatorio, encoding="utf-8")
 
-            logger.info("[SUCESSO] Relatório salvo em: %s", caminho_md)
+            if resultado_final.get("analise_llm_indisponivel"):
+                logger.warning(
+                    "[FALLBACK] Relatório quantitativo salvo em %s (LLM indisponível: %s)",
+                    caminho_md,
+                    resultado_final.get("erro_analista"),
+                )
+            else:
+                logger.info("[SUCESSO] Relatório salvo em: %s", caminho_md)
 
         except Exception:
             houve_falha = True

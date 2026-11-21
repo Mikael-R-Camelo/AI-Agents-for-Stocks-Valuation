@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -16,6 +17,7 @@ from config import (
     DEFAULT_GEMINI_MODEL,
     TAXA_DESCONTO_PADRAO,
     obter_modelo_gemini,
+    obter_modelo_gemini_fallback,
 )
 from graph.workflow import build_app
 from tools.utils import (
@@ -23,6 +25,20 @@ from tools.utils import (
     chave_ordenacao_trimestre,
     normalizar_ticker_b3,
 )
+
+
+def _mock_yfinance_basico() -> MagicMock:
+    cols = pd.to_datetime(["2025-12-31"])
+    mock_ticker = MagicMock()
+    mock_ticker.info = {"currentPrice": 13.44, "currency": "BRL", "payoutRatio": 0.4839}
+    mock_ticker.financials = pd.DataFrame([[113.5]], index=["Net Income"], columns=cols)
+    mock_ticker.balance_sheet = pd.DataFrame(
+        [[1000.0]], index=["Stockholders Equity"], columns=cols
+    )
+    mock_ticker.cash_flow = pd.DataFrame(
+        [[0.0]], index=["Cash Dividends Paid"], columns=cols
+    )
+    return mock_ticker
 
 
 def test_todos_os_setores_mapeados_possuem_protocolo() -> None:
@@ -57,11 +73,21 @@ def test_normalizacao_ticker_e_ordenacao_trimestres() -> None:
     ]
 
 
-def test_modelo_gemini_configuravel_com_default_preservado(
+def test_modelo_gemini_e_fallback_configuraveis(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODEL", raising=False)
     assert obter_modelo_gemini() == DEFAULT_GEMINI_MODEL == "gemini-3.8-flash"
+    assert obter_modelo_gemini_fallback() is None
+
+    # Se fallback for igual ao primário, deve retornar None
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", DEFAULT_GEMINI_MODEL)
+    assert obter_modelo_gemini_fallback() is None
+
+    # Se fallback for distinto do primário, retorna o modelo reserva
+    monkeypatch.setenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash")
+    assert obter_modelo_gemini_fallback() == "gemini-2.5-flash"
 
     monkeypatch.setenv("GEMINI_MODEL", "gemini-override-test")
     assert obter_modelo_gemini() == "gemini-override-test"
@@ -71,6 +97,8 @@ def test_interpolacao_dinamica_prompts() -> None:
     prompt_analista = montar_prompt_sistema_analista(obter_protocolo("banco"))
     assert f"taxa_desconto={TAXA_DESCONTO_PADRAO}" in prompt_analista
     assert f"crescimento_perpetuo={CRESCIMENTO_PERPETUO_PADRAO}" in prompt_analista
+    assert "NÃO deve chamar ferramentas" in prompt_analista
+    assert "resultado_quantitativo" in prompt_analista
     assert "payout_sustentavel" in prompt_analista
     assert "numero_total_acoes" in prompt_analista
     assert "JCP" in prompt_analista
@@ -136,7 +164,6 @@ def test_loop_compliance_reescreve_e_respeita_limite() -> None:
 
     # Caso 1: corrige na 1ª reescrita
     llm_ok = MagicMock()
-    llm_ok.bind_tools.return_value = llm_ok
     llm_ok.invoke.side_effect = [
         AIMessage(content="Preço Justo R$ 18,56. Recomendação: Compra."),
         AIMessage(
@@ -144,7 +171,10 @@ def test_loop_compliance_reescreve_e_respeita_limite() -> None:
         ),
     ]
     app_ok = build_app(llm=llm_ok)
-    with patch("graph.nodes.extrair_dados_do_pdf", return_value=tri_valido):
+    with (
+        patch("graph.nodes.extrair_dados_do_pdf", return_value=tri_valido),
+        patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_basico()),
+    ):
         out_ok = app_ok.invoke(
             {
                 "messages": [],
@@ -161,12 +191,14 @@ def test_loop_compliance_reescreve_e_respeita_limite() -> None:
 
     # Caso 2: persiste violando -> para após MAX_TENTATIVAS_COMPLIANCE e anexa alerta
     llm_teimoso = MagicMock()
-    llm_teimoso.bind_tools.return_value = llm_teimoso
     llm_teimoso.invoke.return_value = AIMessage(
         content="Rating: Buy. Recomendamos comprar o papel."
     )
     app_cap = build_app(llm=llm_teimoso)
-    with patch("graph.nodes.extrair_dados_do_pdf", return_value=tri_valido):
+    with (
+        patch("graph.nodes.extrair_dados_do_pdf", return_value=tri_valido),
+        patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_basico()),
+    ):
         out_cap = app_cap.invoke(
             {
                 "messages": [],

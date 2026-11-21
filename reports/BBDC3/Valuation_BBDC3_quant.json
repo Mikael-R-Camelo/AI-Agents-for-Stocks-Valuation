@@ -1,0 +1,72 @@
+{
+  "ticker": "BBDC3",
+  "setor": "banco",
+  "preco_atual": 12.74,
+  "moeda": "BRL",
+  "erro_dados_mercado": null,
+  "parametros": {
+    "momento_operacional": "recuperacao",
+    "roe_historico": 0.1135,
+    "roe_pdf_recente": 0.156,
+    "roe_usado_conservador": 0.1135,
+    "roe_usado_mediano": 0.156,
+    "payout_medio_observado": 0.4839,
+    "payout_sustentavel": 0.4839,
+    "payout_pdf_recente": 0.5,
+    "payout_usado_conservador": 0.4839,
+    "payout_usado_mediano": 0.5,
+    "fonte_payout": "yfinance_info_payoutRatio_fallback",
+    "num_acoes_pdf": 11178825623.0,
+    "patrimonio_liquido_pdf": 182282051282.0,
+    "trimestre_mais_recente": "3T26",
+    "taxa_desconto": 0.145,
+    "crescimento_perpetuo": 0.04
+  },
+  "projecao_lucros": {
+    "trimestres_realizados": 3,
+    "trimestres_projetados": 1,
+    "momento_operacional": "recuperacao",
+    "soma_acumulada_ano": 20970000000.0,
+    "lucro_anual_conservador": 27960000000.0,
+    "lucro_anual_mediano": 28079000000.0
+  },
+  "multiplos_conservador": {
+    "LPA": 2.5,
+    "VPA": 16.31,
+    "P_L": 5.09,
+    "P_VP": 0.78,
+    "ROE_calculado": 0.1534
+  },
+  "multiplos_mediano": {
+    "LPA": 2.51,
+    "VPA": 16.31,
+    "P_L": 5.07,
+    "P_VP": 0.78,
+    "ROE_calculado": 0.154
+  },
+  "valuation_conservador": {
+    "preco_justo": 17.1,
+    "market_cap_justo": 191160662765.48,
+    "margem_seguranca": 25.5,
+    "upside_downside": 34.22,
+    "crescimento_estagio_1": 5.86,
+    "payout_terminal": 72.41,
+    "taxa_desconto_pct": 14.5,
+    "crescimento_perpetuo_pct": 4.0
+  },
+  "valuation_mediano": {
+    "preco_justo": 18.49,
+    "market_cap_justo": 206643660666.55,
+    "margem_seguranca": 31.08,
+    "upside_downside": 45.1,
+    "crescimento_estagio_1": 7.8,
+    "payout_terminal": 72.41,
+    "taxa_desconto_pct": 14.5,
+    "crescimento_perpetuo_pct": 4.0
+  },
+  "erro_valuation_conservador": null,
+  "erro_valuation_mediano": null,
+  "avisos": [
+    "Linha de dividendos na DFC do Yahoo Finance retornou zerada/ausente (comum em empresas B3 com JCP); utilizado fallback info['payoutRatio']."
+  ]
+}

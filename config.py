@@ -52,6 +52,17 @@ def obter_modelo_gemini() -> str:
     return modelo or DEFAULT_GEMINI_MODEL
 
 
+def obter_modelo_gemini_fallback() -> str | None:
+    """
+    Retorna o modelo Gemini reserva configurado via GEMINI_FALLBACK_MODEL.
+    Retorna None se não configurado ou se for idêntico ao modelo primário.
+    """
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
+    if not fallback or fallback == obter_modelo_gemini():
+        return None
+    return fallback
+
+
 def cache_pdf_habilitado() -> bool:
     """Indica se o cache local SHA-256 de extrações de PDF está habilitado."""
     valor = os.getenv("USAR_CACHE_PDF", "true").strip().lower()

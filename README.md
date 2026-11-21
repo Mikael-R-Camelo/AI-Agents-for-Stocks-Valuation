@@ -24,15 +24,21 @@ The pipeline runs as a typed `StateGraph` (`AgentState`) orchestrating extractio
                  ▼                                                       │
   (Conditional Edge) ROTEADOR ──(Re-extract failing PDFs only, < 3)──────┘
                  │
-         (Chronologically Sorted Consolidated History)
+         (Chronologically Sorted Validated History)
                  │
                  ▼
-         (Node) ANALISTA  <──────► (Node) FERRAMENTAS (yfinance + Valuation)
+       (Node) CALCULADORA (Pure Python — Zero LLM Tokens)
+         ├─ Runs yfinance + projections + multiples + 2-Stage DDM
+         ├─ Logs tabular summary & saves Valuation_<TICKER>_quant.json
                  │
                  ▼
-       (Node) COMPLIANCE (Pure Python) ──(Violation / Attempts <= 2)──► back to ANALISTA
+         (Node) ANALISTA (Single-Shot LLM Synthesis)
+         └─ Transient 503/429 -> optional GEMINI_FALLBACK_MODEL -> deterministic MD fallback
                  │
-          (Approved or Explicit Alert Banner)
+                 ▼
+       (Node) COMPLIANCE (Pure Python) ──(Violation / <= 2 & LLM up)──► back to ANALISTA
+                 │
+          (Approved, Fallback, or Explicit Alert Banner)
                  │
                  ▼
    [ Save Valuation_<TICKER>.md ]
@@ -48,8 +54,9 @@ The pipeline runs as a typed `StateGraph` (`AgentState`) orchestrating extractio
    * **Conditional Cash Flow Reconciliation:** Runs whenever DFC fields are present, validating $\text{Beginning Cash} + \text{Net Change} + \text{FX Effect} \approx \text{Ending Cash}$.
    * **True Chronological Ordering:** Sorts consolidated quarters by `(year, quarter)` via `chave_ordenacao_trimestre`, preserving accuracy across fiscal year boundaries (e.g., `4T25 -> 1T26 -> 2T26`).
    * **Bounded Retries & Safe Caching:** Increments `tentativas_extracao` on each pass (capped at `MAX_TENTATIVAS_EXTRACAO = 3`) and persists entries to the local SHA-256 cache **strictly after validation passes**.
-4. **Analyst Node (`analista_node`):** Loads the dedicated system prompt from [analista_prompt.py](agents/prompts/analista_prompt.py) with official valuation parameters dynamically interpolated from `config.py` / `tools/valuation.py`, assesses operational momentum, delegates all math to Python tools, and drafts the final Markdown report.
-5. **Compliance Node (`compliance_node`):** Deterministic post-generation guardrail ([compliance.py](agents/compliance.py)) that audits the final report prior to saving `Valuation_<TICKER>.md`.
+4. **Deterministic Calculator Node (`calculadora_node`):** Pure-Python node (zero LLM tokens) that classifies `momento_operacional` from the chronological earnings trajectory, invokes all market-data, multiples, and 2-Stage DDM functions into a typed Pydantic `ResultadoQuantitativo`, logs a clean tabular summary to the terminal, and persists `reports/<TICKER>/Valuation_<TICKER>_quant.json` before invoking the Analyst LLM.
+5. **Single-Shot Analyst Node (`analista_node`) & Graceful Fallback:** Loads the dedicated system prompt from [analista_prompt.py](agents/prompts/analista_prompt.py) and performs a **single LLM call** (no ReAct tool loop) to synthesize the qualitative narrative around the pre-computed numbers. On transient API errors (`503`, `429`, timeouts), it optionally tries `GEMINI_FALLBACK_MODEL` (when explicitly configured) and otherwise degrades gracefully via `gerar_relatorio_fallback_quantitativo`, delivering a complete quantitative Markdown report without aborting the pipeline.
+6. **Compliance Node (`compliance_node`):** Deterministic post-generation guardrail ([compliance.py](agents/compliance.py)) that audits the final report prior to saving `Valuation_<TICKER>.md` (and never loops back to an unavailable LLM in fallback mode).
 
 ---
 
@@ -98,6 +105,7 @@ Key engineering trade-offs are documented in [docs/adr/README.md](docs/adr/READM
 * [ADR-001: Deterministic Python for Valuation and Accounting Validation](docs/adr/001-deterministic-valuation-and-validation.md)
 * [ADR-002: Lexical Page Ranking and Post-Validation SHA-256 Cache Over a Vector DB](docs/adr/002-lexical-page-ranking-and-sha256-cache-over-vector-db.md)
 * [ADR-003: Post-Generation Compliance Guardrail with Clause-Scoped Negation](docs/adr/003-clause-scoped-compliance-guardrail.md)
+* [ADR-004: Deterministic Calculator Node and Graceful LLM Fallback Over ReAct Tool Loop](docs/adr/004-deterministic-calculator-and-llm-fallback.md)
 
 ---
 
@@ -113,17 +121,18 @@ AI-Agents-for-Stocks-Valuation/
 │       ├── README.md
 │       ├── 001-deterministic-valuation-and-validation.md
 │       ├── 002-lexical-page-ranking-and-sha256-cache-over-vector-db.md
-│       └── 003-clause-scoped-compliance-guardrail.md
-├── config.py                     # Centralized config (Ke, g, retry limits, cache, logging, LLM factory)
+│       ├── 003-clause-scoped-compliance-guardrail.md
+│       └── 004-deterministic-calculator-and-llm-fallback.md
+├── config.py                     # Centralized config (Ke, g, retry limits, cache, fallback model, LLM factory)
 ├── graph/
 │   ├── __init__.py               # Graph exports
-│   ├── state.py                  # AgentState TypedDict definition
-│   ├── nodes.py                  # Nodes (extrator, validador, analista, compliance) & routers
-│   └── workflow.py               # build_app(llm=None) with dependency injection
+│   ├── state.py                  # AgentState TypedDict & ResultadoQuantitativo Pydantic schemas
+│   ├── nodes.py                  # Nodes (extrator, validador, calculadora, analista, compliance) & fallback generator
+│   └── workflow.py               # build_app(llm=None, fallback_llm=None) with dependency injection
 ├── agents/
 │   ├── prompts/
 │   │   ├── __init__.py           # Prompt builder exports
-│   │   ├── analista_prompt.py    # Analyst System Prompt (dynamically interpolates Ke & g)
+│   │   ├── analista_prompt.py    # Single-shot Analyst System Prompt (pre-computed numbers, no tool loop)
 │   │   └── extrator_prompt.py    # Extractor Prompt with corrective feedback injection
 │   ├── compliance.py             # Deterministic post-generation compliance guardrail (Pydantic)
 │   ├── extrator.py               # Pydantic schema, smart page ranking, and SHA-256 cache
@@ -136,16 +145,17 @@ AI-Agents-for-Stocks-Valuation/
 │   ├── conftest.py               # Deterministic cache and env isolation fixtures
 │   ├── test_valuation.py         # 2-stage DDM math & domain guards
 │   ├── test_market_data.py       # Projections, multiples, yfinance mocks, JCP fallback & cache
-│   ├── test_graph_validation.py  # Annualized ROE, DFC, surgical retries, page ranking & SHA-256 cache
-│   └── test_contracts.py         # Sector contracts, prompt interpolation & compliance guardrail
+│   ├── test_graph_validation.py  # ROE/DFC audit, calculadora_node, 503 fallback, retries & SHA-256 cache
+│   └── test_contracts.py         # Sector contracts, prompt interpolation, model fallback & compliance guardrail
 ├── reports/                      # Batch input/output directory (grouped by ticker)
 │   └── BBDC3/
 │       ├── Demonstracao-Financeira-1T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-2T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-3T26-Bradesco.pdf
-│       └── Valuation_BBDC3.md    # Generated valuation report
+│       ├── Valuation_BBDC3_quant.json  # Deterministic quantitative snapshot saved before LLM call
+│       └── Valuation_BBDC3.md          # Final valuation report (or deterministic quantitative fallback)
 ├── .cache/                       # Local SHA-256 cache of validated PDF extractions (gitignored)
-├── .env                          # Environment variables (GOOGLE_API_KEY, GEMINI_MODEL, USAR_CACHE_PDF)
+├── .env                          # Environment variables (GOOGLE_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL, USAR_CACHE_PDF)
 ├── .gitignore
 ├── main.py                       # Thin CLI entry point (--no-cache) & batch runner
 ├── pyproject.toml                # Pytest configuration
@@ -177,6 +187,7 @@ Create a `.env` file in the repository root with your Google AI Studio key (and 
 GOOGLE_API_KEY="your_api_key_here"
 # Optional:
 # GEMINI_MODEL="gemini-3.8-flash"
+# GEMINI_FALLBACK_MODEL=""
 # USAR_CACHE_PDF="true"
 ```
 
@@ -191,13 +202,13 @@ To bypass the local PDF SHA-256 cache for a specific run:
 ```bash
 python main.py --no-cache
 ```
-Structured `logging` output reports extraction progress, accounting audit checks, selective retries, tool calls, and compliance verification. Final reports are written to `reports/<TICKER>/Valuation_<TICKER>.md`.
+Structured `logging` output reports extraction progress, accounting audit checks, selective retries, immediate deterministic valuation tables (`Valuation_<TICKER>_quant.json`), single-shot Analyst synthesis (or quantitative fallback on `503`), and compliance verification. Final reports are written to `reports/<TICKER>/Valuation_<TICKER>.md`.
 
 ---
 
 ## 🧪 Code Quality, CI & Automated Tests
 
-The entire test suite under `tests/` (84 tests) is **100% deterministic, offline, and zero-token** (no Gemini API or live network calls) and runs automatically via [GitHub Actions CI](.github/workflows/ci.yml) on every push and pull request:
+The entire test suite under `tests/` is **100% deterministic, offline, and zero-token** (no Gemini API or live network calls) and runs automatically via [GitHub Actions CI](.github/workflows/ci.yml) on every push and pull request:
 
 ```bash
 ruff check .
