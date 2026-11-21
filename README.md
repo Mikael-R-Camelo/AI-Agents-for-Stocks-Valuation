@@ -95,6 +95,15 @@ O pipeline combina travas de *System Prompt* com **auditoria determinística pó
 
 ```text
 AI-Agents-for-Stocks-Valuation/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                # GitHub Actions CI (ruff check . + pytest -v em todo push/PR)
+├── docs/
+│   └── adr/                      # Architecture Decision Records (trade-offs em inglês)
+│       ├── README.md
+│       ├── 001-deterministic-valuation-and-validation.md
+│       ├── 002-lexical-page-ranking-and-sha256-cache-over-vector-db.md
+│       └── 003-clause-scoped-compliance-guardrail.md
 ├── config.py                     # Configurações centralizadas (Ke, g, limites, cache, logging e factory LLM)
 ├── graph/
 │   ├── __init__.py               # Exportações do grafo
