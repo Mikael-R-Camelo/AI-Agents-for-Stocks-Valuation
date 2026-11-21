@@ -1,192 +1,203 @@
 # 📈 AI Agents for Stocks Valuation
 
-Pipeline multiagente autônomo desenvolvido em Python com **LangGraph** e **Google Gemini** para análise fundamentalista e *valuation* automatizado de ações da B3 a partir de relatórios trimestrais (*Press Releases*) e dados de mercado em tempo real.
+Autonomous multi-agent pipeline built in Python with **LangGraph**, **Pydantic**, and **Google Gemini** for fundamental equity analysis and automated valuation of Brazilian B3 stocks from quarterly earnings filings (*Press Releases*) and live market data.
 
-O sistema combina a capacidade de leitura contextual de LLMs com a precisão determinística do Python, utilizando o padrão de arquitetura **Reflection (Self-Correction)** tanto na auditoria contábil da extração (por PDF) quanto no guardrail determinístico de compliance pós-geração.
+The architecture pairs LLM contextual document reading with **deterministic Python financial engineering**, applying the **Reflection (Self-Correction)** pattern across two independent audit gates: per-PDF accounting validation before valuation and a deterministic post-generation compliance guardrail before report persistence.
+
+> **Engineering Design Note:** Core architectural trade-offs—zero LLM math, lexical page ranking + SHA-256 caching instead of a Vector DB, and clause-scoped compliance auditing—are documented in the [Architecture Decision Records (`docs/adr/`)](docs/adr/README.md).
 
 ---
 
-## 🏗️ Arquitetura do Sistema (LangGraph)
+## 🏗️ System Architecture (LangGraph)
 
-O projeto opera como uma máquina de estados (`StateGraph`) onde uma memória compartilhada (`AgentState`) trafega entre nós especializados:
+The pipeline runs as a typed `StateGraph` (`AgentState`) orchestrating extraction, accounting verification, deterministic financial tool execution, and compliance verification:
 
 ```text
-  [ Início / Varredura de Pastas ]
+  [ Start / Batch Folder Scan ]
                  │
-                 ▼ (Identifica Setor via Yahoo Finance)
-         (Nó) EXTRATOR  <───────────────────────────────────────────────┐
-                 │                                                      │
-                 ▼ (JSON Pydantic por PDF)                              │
-        (Nó) VALIDADOR (Python Puro)                                    │
-                 │                                                      │
-                 ▼                                                      │
-  (Aresta Condicional) ROTEADOR ──(Reprocessa só PDFs com erro < 3)─────┘
+                 ▼ (Resolve Sector via Yahoo Finance)
+         (Node) EXTRATOR  <──────────────────────────────────────────────┐
+                 │                                                       │
+                 ▼ (Structured Pydantic JSON per PDF)                    │
+        (Node) VALIDADOR (Pure Python)                                   │
+                 │                                                       │
+                 ▼                                                       │
+  (Conditional Edge) ROTEADOR ──(Re-extract failing PDFs only, < 3)──────┘
                  │
-         (Histórico Consolidado em Ordem Cronológica)
-                 │
-                 ▼
-         (Nó) ANALISTA  <──────► (Nó) FERRAMENTAS (yfinance + Valuation)
+         (Chronologically Sorted Consolidated History)
                  │
                  ▼
-       (Nó) COMPLIANCE (Python Puro) ──(Violação / Tentativas <= 2)──► volta ao ANALISTA
-                 │
-          (Aprovado ou Alerta Explícito)
+         (Node) ANALISTA  <──────► (Node) FERRAMENTAS (yfinance + Valuation)
                  │
                  ▼
-   [ Salva Valuation_<TICKER>.md ]
+       (Node) COMPLIANCE (Pure Python) ──(Violation / Attempts <= 2)──► back to ANALISTA
+                 │
+          (Approved or Explicit Alert Banner)
+                 │
+                 ▼
+   [ Save Valuation_<TICKER>.md ]
 ```
 
-### Componentes do Grafo
+### Graph Components
 
-1. **Identificador Dinâmico de Setor (`tools/utils.py` + `agents/sector_protocols.py`):** Antes de iniciar o grafo para um ativo, o sistema consulta o Yahoo Finance (`yfinance`), identifica o setor da companhia e carrega o protocolo correspondente (`banco`, `energia`/`eletrica`, `holding`, `commodities`, `imobiliario`, `varejo`, `saude`, `industria` ou `geral`).
-2. **Nó Extrator (`extrator_node`):** Lê múltiplos PDFs trimestrais (`1T`, `2T`, `3T`, `4T`) utilizando `PyPDFLoader` e saída estruturada via **Pydantic** (`DadosTrimestraisPDF`). Os campos de DFC (`caixa_inicial`, `caixa_final`, `variacao_liquida_caixa` e `efeito_cambial_caixa`) são opcionais (`float | None`) para suportar *Press Releases* de bancos sem DFC. Em retentativas, reprocessa **cirurgicamente apenas os PDFs reprovados**, injetando o feedback exato da divergência no prompt ([extrator_prompt.py](agents/prompts/extrator_prompt.py)).
-3. **Nó Validador (`validador_node`) & Loop de Reflexão:** Nó determinístico em Python puro (sem custo de tokens) que audita todos os trimestres extraídos:
-   * **Integridade Estrutural:** valida `numero_total_acoes > 0`, `patrimonio_liquido != 0` e escalas decimais (`roe_reportado`, `payout_estimado`).
-   * **Prova Real do ROE Anualizado:** anualiza o ROE trimestral ($\frac{\text{Lucro}_{\text{tri}}}{\text{PL}}$ nas convenções composta e linear) e compara com o `roe_reportado` anualizado.
-   * **Conciliação de Caixa (DFC opcional):** executada apenas quando a DFC estiver presente no PDF, validando $\text{Caixa Inicial} + \text{Variação Líquida} + \text{Efeito Cambial} \approx \text{Caixa Final}$.
-   * **Ordenação Cronológica Real:** consolida os trimestres por `(ano, trimestre)` via `chave_ordenacao_trimestre`, preservando a ordem correta mesmo em viradas de ano (ex.: `4T25 -> 1T26 -> 2T26`).
-   * **Limite de Tentativas:** `tentativas_extracao` é incrementado a cada passagem e limita o loop a no máximo **3 tentativas** (`MAX_TENTATIVAS_EXTRACAO = 3`), encaminhando ressalvas de auditoria ao Analista caso algum erro persista.
-4. **Nó Analista (`analista_node`):** Carrega o *System Prompt* dedicado em [analista_prompt.py](agents/prompts/analista_prompt.py) com os parâmetros oficiais importados diretamente de `tools/valuation.py`, avalia o momento operacional, aciona exclusivamente as ferramentas determinísticas e redige o relatório final em Markdown.
-5. **Nó de Compliance (`compliance_node`):** Guardrail determinístico pós-geração ([compliance.py](agents/compliance.py)) que audita o relatório final antes de salvar o `.md` (detalhes na seção de Compliance).
-
----
-
-## ⚙️ Engenharia Financeira e Ferramentas (`@tool`)
-
-Para evitar alucinações matemáticas comuns em modelos de linguagem, **toda a álgebra financeira é executada por ferramentas determinísticas em Python**:
-
-* **Anualização de Lucros em Duplo Cenário (`projetar_lucro_anual_cenarios`):** Quando o ano fiscal ainda está em andamento (ex.: dados até o 3T), projeta os trimestres faltantes sob duas óticas baseadas no `momento_operacional` (`recuperacao`, `estavel` ou `deteriorando`), tratando corretamente lucros e prejuízos e garantindo a invariante `lucro_anual_conservador <= lucro_anual_mediano`:
-  * **Cenário Conservador:** estressa os trimestres restantes utilizando o pior trimestre (ou a média do ano em recuperação), agravando prejuízos quando negativos.
-  * **Cenário Mediano:** utiliza a média do ano, o *run-rate* do último trimestre ou o pior trimestre em deterioração.
-* **Ancoragem Histórica e Blindagem ON/PN (`yfinance`):**
-  * `buscar_dados_mercado_yfinance`: captura **exclusivamente** a cotação atual (`preco_atual`, com fallback para `fast_info`) e a moeda na B3. **Blindagem estrutural:** não retorna `sharesOutstanding` nem `bookValue`, eliminando o risco de distorção por classe ON/PN — `numero_total_acoes` e `patrimonio_liquido` vêm exclusivamente do PDF oficial.
-  * `buscar_medias_historicas_yfinance`: calcula o **ROE médio real dos últimos 4 anos** cruzando DRE e Balanço Patrimonial com suporte a aliases IFRS do Yahoo Finance.
-  * `buscar_payout_medio_historico_yfinance`: calcula o **Payout médio dos últimos 4 anos** cruzando DRE e DFC (com suporte a dividendos ON+PN), descarta distorções não-recorrentes `> 150%`, aplica **fallback automático para `info["payoutRatio"]`** quando a DFC vier zerada/ausente (comum em bancos brasileiros que distribuem via **JCP**) e retorna explicitamente `payout_medio_observado` e `payout_sustentavel` (limitado ao teto de `1.0` para o DDM).
-* **Múltiplos e Valuation (`calcular_multiplos_basicos` & `fluxo_de_caixa_futuro_buffet`):**
-  * Calcula LPA, VPA, P/L, P/VP e ROE implícito (retornando `None` para múltiplos não aplicáveis em caso de prejuízo ou PL negativo).
-  * Executa o **DDM de 2 Estágios Consistente** com guardas numéricas e parâmetros oficiais definidos em `tools/valuation.py`:
-    * **Estágio 1 (Anos 1 a $N$):** lucro anual cresce à taxa sustentável $g_{\text{sust}} = (1 - \text{payout}) \times \text{ROE}$ e desconta os dividendos efetivamente distribuídos ($\text{Lucro}_t \times \text{payout}$).
-    * **Estágio 2 (Perpetuidade / Valor Terminal):** assume convergência competitiva do retorno marginal ao custo de capital próprio ($ROE_{\text{terminal}} = K_e$), aplicando o payout sustentável de maturidade $\text{payout}_{\text{terminal}} = 1 - \frac{g_{\text{perpétuo}}}{K_e}$ no modelo de Gordon Growth.
-    * **Parâmetros Padrão:** Taxa de Desconto **$K_e = 14{,}5\%$** (`TAXA_DESCONTO_PADRAO = 0.145`) e Crescimento Perpétuo **$g_{\text{perpétuo}} = 4{,}0\%$** (`CRESCIMENTO_PERPETUO_PADRAO = 0.04`), resultando em $\text{payout}_{\text{terminal}} = 72{,}41\%$.
+1. **Dynamic Sector Resolver (`tools/utils.py` + `agents/sector_protocols.py`):** Queries Yahoo Finance (`yfinance`) using an in-memory per-execution `Ticker` cache to map the company's sector to its internal analysis protocol (`banco`, `energia`/`eletrica`, `holding`, `commodities`, `imobiliario`, `varejo`, `saude`, `industria`, or `geral`).
+2. **Extractor Node (`extrator_node`):** Reads quarterly PDF filings (`1T`–`4T`) via `PyPDFLoader` and enforces structured output through **Pydantic** (`DadosTrimestraisPDF`). Cash-flow statement (DFC) fields (`caixa_inicial`, `caixa_final`, `variacao_liquida_caixa`, `efeito_cambial_caixa`) are optional (`float | None`) to support bank earnings releases that omit full DFC tables. On retries, it **surgically reprocesses only failing PDFs**, injecting exact mathematical error feedback into the prompt ([extrator_prompt.py](agents/prompts/extrator_prompt.py)).
+3. **Validator Node (`validador_node`) & Reflection Loop:** Zero-token deterministic Python audit running over every extracted quarter:
+   * **Structural Integrity:** Validates `numero_total_acoes > 0`, `patrimonio_liquido != 0`, and decimal scale bounds (`roe_reportado`, `payout_estimado`).
+   * **Annualized ROE Cross-Check:** Annualizes quarterly ROE ($\frac{\text{Quarterly Net Income}}{\text{Equity}}$ under both compound and linear conventions) and verifies convergence against reported annualized `roe_reportado`.
+   * **Conditional Cash Flow Reconciliation:** Runs whenever DFC fields are present, validating $\text{Beginning Cash} + \text{Net Change} + \text{FX Effect} \approx \text{Ending Cash}$.
+   * **True Chronological Ordering:** Sorts consolidated quarters by `(year, quarter)` via `chave_ordenacao_trimestre`, preserving accuracy across fiscal year boundaries (e.g., `4T25 -> 1T26 -> 2T26`).
+   * **Bounded Retries & Safe Caching:** Increments `tentativas_extracao` on each pass (capped at `MAX_TENTATIVAS_EXTRACAO = 3`) and persists entries to the local SHA-256 cache **strictly after validation passes**.
+4. **Analyst Node (`analista_node`):** Loads the dedicated system prompt from [analista_prompt.py](agents/prompts/analista_prompt.py) with official valuation parameters dynamically interpolated from `config.py` / `tools/valuation.py`, assesses operational momentum, delegates all math to Python tools, and drafts the final Markdown report.
+5. **Compliance Node (`compliance_node`):** Deterministic post-generation guardrail ([compliance.py](agents/compliance.py)) that audits the final report prior to saving `Valuation_<TICKER>.md`.
 
 ---
 
-## 🧠 Metodologias de Valuation Suportadas
+## ⚙️ Financial Engineering & Deterministic Tools (`@tool`)
 
-O sistema é ancorado em modelos matemáticos determinísticos alimentados pelos dados extraídos e auditados:
+To eliminate LLM arithmetic hallucinations, **100% of financial calculations execute in typed, unit-tested Python tools**:
 
-* **DDM de 2 Estágios Consistente (Fluxo de Dividendos Descontados):** Projeta o crescimento sustentável via retenção de lucros no estágio explícito (4 anos), desconta os dividendos efetivos a $K_e = 14{,}5\%$ e aplica convergência competitiva na perpetuidade com $g_{\text{perpétuo}} = 4{,}0\%$ e $\text{payout}_{\text{terminal}}$ sustentável.
-* *(Em Breve)* **Valuation por Dividendos (Método Décio Bazin):** O sistema já conta com `buscar_payout_medio_historico_yfinance` (incluindo fallback para JCP), preparando a rota alternativa baseada em *Dividend Yield* mínimo exigido de 6%.
-* *(Em Breve)* **Valuation pelo método de Benjamin Graham.**
+* **Dual-Scenario Annualized Earnings (`projetar_lucro_anual_cenarios`):** Projects remaining quarters for in-progress fiscal years (e.g., 1Q–3Q reported) across three operational regimes (`recuperacao`, `estavel`, `deteriorando`), applying proper downside stress to both profits and losses while enforcing the invariant `lucro_anual_conservador <= lucro_anual_mediano`:
+  * **Conservative Scenario:** Stresses remaining quarters using the worst reported quarter (or YTD mean during turnaround), deepening negative values during losses.
+  * **Median Scenario:** Uses the YTD average, latest-quarter run-rate, or worst quarter under deterioration.
+* **Historical Anchoring & B3 ON/PN Safeguards (`yfinance`):**
+  * `buscar_dados_mercado_yfinance`: Fetches **exclusively** current share price (`preco_atual`, with `fast_info` fallback) and currency on B3. **Structural safeguard:** intentionally omits `sharesOutstanding` and `bookValue` from the payload to prevent ON/PN share-class distortions—`numero_total_acoes` and `patrimonio_liquido` are sourced strictly from official PDF filings.
+  * `buscar_medias_historicas_yfinance`: Computes **4-year historical average ROE** across Income Statement and Balance Sheet with IFRS accounting line-item aliases.
+  * `buscar_payout_medio_historico_yfinance`: Computes **4-year historical average Payout** across Income Statement and Cash Flow (summing ON+PN dividends when split), filters out non-recurring distortions `> 150%`, applies an **automatic fallback to `info["payoutRatio"]`** when cash-flow dividends are zero/missing (common for Brazilian banks distributing via **JCP**), and explicitly returns both `payout_medio_observado` and `payout_sustentavel` (capped at `1.0` for DDM compatibility).
+* **Multiples & Valuation (`calcular_multiplos_basicos` & `fluxo_de_caixa_futuro_buffet`):**
+  * Computes EPS (`LPA`), BVPS (`VPA`), P/E (`P_L`), P/B (`P_VP`), and implied ROE—returning `None` for non-applicable multiples under losses or negative equity.
+  * Implements a **Consistent 2-Stage Dividend Discount Model (DDM)** with strict numeric/domain guards and centralized defaults in `config.py`:
+    * **Stage 1 (Years 1 to $N$):** Projects earnings growth at sustainable rate $g_{\text{sust}} = (1 - \text{payout}) \times \text{ROE}$ and discounts effective shareholder dividends ($\text{Earnings}_t \times \text{payout}$).
+    * **Stage 2 (Terminal Value / Perpetuity):** Assumes competitive equilibrium ($\text{ROE}_{\text{terminal}} = K_e$), applying maturity sustainable payout $\text{payout}_{\text{terminal}} = 1 - \frac{g_{\text{perpetual}}}{K_e}$ in Gordon Growth to avoid artificial value destruction.
+    * **Default Parameters:** Cost of Equity **$K_e = 14.5\%$** (`TAXA_DESCONTO_PADRAO = 0.145`) and Perpetual Growth **$g_{\text{perpetual}} = 4.0\%$** (`CRESCIMENTO_PERPETUO_PADRAO = 0.04`), yielding $\text{payout}_{\text{terminal}} = 72.41\%$.
 
 ---
 
-## 🛡️ Regras de Compliance
+## 🧠 Valuation Methodologies
 
-O pipeline combina travas de *System Prompt* com **auditoria determinística pós-geração** ([agents/compliance.py](agents/compliance.py)):
-
-* **Zero Matemática Mental:** É proibido deduzir, arredondar ou calcular qualquer indicador fora das ferramentas Python.
-* **Guardrail Determinístico contra Recomendações Explícitas:** Antes de salvar o arquivo `.md`, o nó `compliance_node` verifica padrões explícitos de recomendação de investimento (como `Recomendação: Compra/Venda/Manter`, `Recomendamos comprar/vender`, `Rating: Buy/Sell/Hold`, `Sinal de compra/venda`), **sem gerar falsos positivos** em termos financeiros legítimos (ex.: *"venda de carteira"*, *"compra de ativos"*) ou em disclaimers negativos (*"não constitui recomendação de compra ou venda"*).
-* **Ação Corretiva Controlada:** Caso detecte violação, solicita reescrita limpa ao Analista (até 2 tentativas via `MAX_TENTATIVAS_COMPLIANCE = 2`); persistindo a violação no limite, anexa um banner explícito de alerta de compliance no topo do relatório salvo.
+* **Consistent 2-Stage DDM (Implemented):** Projects sustainable earnings retention over a 4-year explicit horizon, discounts distributed dividends at $K_e = 14.5\%$, and applies competitive-convergence terminal value at $g_{\text{perpetual}} = 4.0\%$.
+* *(Roadmap)* **Dividend Yield Ceiling (Décio Bazin Method):** Leverages `buscar_payout_medio_historico_yfinance` (including JCP fallback) to estimate price ceilings targeting a minimum 6% dividend yield.
+* *(Roadmap)* **Benjamin Graham Intrinsic Value Formula.**
 
 ---
 
-## 📂 Estrutura do Projeto
+## 🛡️ Compliance & Guardrails
+
+The pipeline combines System Prompt constraints with **deterministic post-generation auditing** ([agents/compliance.py](agents/compliance.py)):
+
+* **Zero Mental Math:** The Analyst is prohibited from estimating or computing financial metrics outside tool payloads.
+* **Clause-Scoped Compliance Guardrail:** Before writing `Valuation_<TICKER>.md`, `compliance_node` scans normalized text (stripping inline Markdown such as `**Buy**`) for explicit investment recommendation patterns (e.g., `Recomendação: Compra/Venda/Manter`, `Recomendamos comprar/vender`, `Rating: Buy/Sell/Hold`, `Sinal de compra/venda`) while **avoiding false positives** on legitimate corporate finance prose (*"venda de ativos"*, *"compra de carteira"*) and negative legal disclaimers (*"não constitui recomendação de compra ou venda"*).
+* **Bounded Corrective Rewrite:** Detected violations trigger a clean rewrite loop back to the Analyst (capped at `MAX_TENTATIVAS_COMPLIANCE = 2`); if violations persist at the cap, an explicit automated compliance alert banner is prepended to the saved report.
+
+---
+
+## 📐 Architecture Decision Records (ADRs)
+
+Key engineering trade-offs are documented in [docs/adr/README.md](docs/adr/README.md):
+
+* [ADR-001: Deterministic Python for Valuation and Accounting Validation](docs/adr/001-deterministic-valuation-and-validation.md)
+* [ADR-002: Lexical Page Ranking and Post-Validation SHA-256 Cache Over a Vector DB](docs/adr/002-lexical-page-ranking-and-sha256-cache-over-vector-db.md)
+* [ADR-003: Post-Generation Compliance Guardrail with Clause-Scoped Negation](docs/adr/003-clause-scoped-compliance-guardrail.md)
+
+---
+
+## 📂 Project Structure
 
 ```text
 AI-Agents-for-Stocks-Valuation/
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                # GitHub Actions CI (ruff check . + pytest -v em todo push/PR)
+│       └── ci.yml                # GitHub Actions CI (ruff check . + pytest -v on every push/PR)
 ├── docs/
-│   └── adr/                      # Architecture Decision Records (trade-offs em inglês)
+│   └── adr/                      # Architecture Decision Records (engineering trade-offs)
 │       ├── README.md
 │       ├── 001-deterministic-valuation-and-validation.md
 │       ├── 002-lexical-page-ranking-and-sha256-cache-over-vector-db.md
 │       └── 003-clause-scoped-compliance-guardrail.md
-├── config.py                     # Configurações centralizadas (Ke, g, limites, cache, logging e factory LLM)
+├── config.py                     # Centralized config (Ke, g, retry limits, cache, logging, LLM factory)
 ├── graph/
-│   ├── __init__.py               # Exportações do grafo
-│   ├── state.py                  # Definição de AgentState
-│   ├── nodes.py                  # Nós (extrator, validador, analista, compliance) e roteadores
-│   └── workflow.py               # build_app(llm=None) com injeção de dependência
+│   ├── __init__.py               # Graph exports
+│   ├── state.py                  # AgentState TypedDict definition
+│   ├── nodes.py                  # Nodes (extrator, validador, analista, compliance) & routers
+│   └── workflow.py               # build_app(llm=None) with dependency injection
 ├── agents/
 │   ├── prompts/
-│   │   ├── __init__.py           # Exportação dos construtores de prompts
-│   │   ├── analista_prompt.py    # System Prompt do Analista (interpola Ke e g de valuation.py)
-│   │   └── extrator_prompt.py    # Prompt do Extrator com suporte a feedback corretivo
-│   ├── compliance.py             # Guardrail determinístico de compliance pós-geração (Pydantic)
-│   ├── extrator.py               # Schema Pydantic, filtragem inteligente de páginas e cache SHA-256
-│   └── sector_protocols.py       # Protocolos setoriais alinhados ao mapeamento do Yahoo Finance
+│   │   ├── __init__.py           # Prompt builder exports
+│   │   ├── analista_prompt.py    # Analyst System Prompt (dynamically interpolates Ke & g)
+│   │   └── extrator_prompt.py    # Extractor Prompt with corrective feedback injection
+│   ├── compliance.py             # Deterministic post-generation compliance guardrail (Pydantic)
+│   ├── extrator.py               # Pydantic schema, smart page ranking, and SHA-256 cache
+│   └── sector_protocols.py       # Sector guidelines aligned with Yahoo Finance mappings
 ├── tools/
-│   ├── market_data.py            # Ferramentas do Yahoo Finance (com fallback JCP), múltiplos e projeção
-│   ├── utils.py                  # Ticker B3, cache em memória yfinance, ordenação cronológica e setor
-│   └── valuation.py              # Modelo DDM de 2 Estágios consistente (Ke=14,5%, g=4,0%)
+│   ├── market_data.py            # Yahoo Finance tools (with JCP fallback), multiples & projections
+│   ├── utils.py                  # B3 ticker normalization, yfinance cache, quarter sorting & sector
+│   └── valuation.py              # Consistent 2-Stage DDM (Ke=14.5%, g=4.0%)
 ├── tests/
-│   ├── conftest.py               # Isolamento determinístico de caches e ambiente
-│   ├── test_valuation.py         # DDM de 2 estágios e guardas de domínio
-│   ├── test_market_data.py       # Projeções, múltiplos, mocks yfinance, fallback JCP e cache
-│   ├── test_graph_validation.py  # ROE anualizado, DFC, retry seletivo, filtragem e cache SHA-256
-│   └── test_contracts.py         # Setores/protocolos, prompts dinâmicos e guardrail de compliance
-├── reports/                      # Diretório de entrada e saída (organizado por Ticker)
+│   ├── conftest.py               # Deterministic cache and env isolation fixtures
+│   ├── test_valuation.py         # 2-stage DDM math & domain guards
+│   ├── test_market_data.py       # Projections, multiples, yfinance mocks, JCP fallback & cache
+│   ├── test_graph_validation.py  # Annualized ROE, DFC, surgical retries, page ranking & SHA-256 cache
+│   └── test_contracts.py         # Sector contracts, prompt interpolation & compliance guardrail
+├── reports/                      # Batch input/output directory (grouped by ticker)
 │   └── BBDC3/
 │       ├── Demonstracao-Financeira-1T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-2T26-Bradesco.pdf
 │       ├── Demonstracao-Financeira-3T26-Bradesco.pdf
-│       └── Valuation_BBDC3.md    # Relatório gerado automaticamente pelo pipeline
-├── .cache/                       # Cache local SHA-256 de extrações aprovadas (ignorado pelo Git)
-├── .env                          # Variáveis de ambiente (GOOGLE_API_KEY, GEMINI_MODEL, USAR_CACHE_PDF)
+│       └── Valuation_BBDC3.md    # Generated valuation report
+├── .cache/                       # Local SHA-256 cache of validated PDF extractions (gitignored)
+├── .env                          # Environment variables (GOOGLE_API_KEY, GEMINI_MODEL, USAR_CACHE_PDF)
 ├── .gitignore
-├── main.py                       # Ponto de entrada CLI enxuto (--no-cache) e execução em lote
-├── requirements.txt              # Dependências de produção
-└── requirements-dev.txt          # Dependências de desenvolvimento (ruff, pytest)
+├── main.py                       # Thin CLI entry point (--no-cache) & batch runner
+├── pyproject.toml                # Pytest configuration
+├── requirements.txt              # Production dependencies
+└── requirements-dev.txt          # Development & CI dependencies (ruff, pytest)
 ```
 
-> **💡 Boas Práticas de Documentos e Otimização:** Priorize arquivos de **Press Release** (Relatório de Análise Econômica e Financeira). Para PDFs extensos que excedam o limite de caracteres, o extrator aplica **rankeamento inteligente de páginas** por palavras-chave contábeis (DRE, Lucro, ROE, PL, Capital Social/Ações, DFC e Guidance), preservando a ordem original das páginas. Extrações **aprovadas** pelo validador são salvas em cache local por hash SHA-256 + versão do schema/modelo (`.cache/extrator/`), reduzindo latência e custo de tokens em re-execuções.
+> **💡 Document Handling & Token Optimization:** Prefer concise **Earnings Press Releases** over full IFRS statements when available. For long PDFs exceeding the character budget (`150,000` chars), the extractor applies **financial keyword page ranking** (prioritizing Income Statement, Recurring Net Income, ROE, Equity, Share Count, Cash Flow, and Management Guidance) while preserving original page order. Validated extractions are cached locally by `SHA-256(pdf) + schema_version + model` in `.cache/extrator/` to eliminate redundant token spend on repeated runs.
 
 ---
 
-## 🚀 Como Executar
+## 🚀 Quickstart
 
-### 1. Configurar o Ambiente Virtual e Dependências
+### 1. Set Up Virtual Environment & Dependencies
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Para desenvolvimento e testes automatizados:
+For local development, linting, and automated testing:
 ```bash
 pip install -r requirements-dev.txt
 ```
 
-### 2. Configurar Variáveis de Ambiente
-Crie um arquivo `.env` na raiz do projeto contendo sua chave do Google AI Studio (e, opcionalmente, modelo e controle de cache):
+### 2. Configure Environment Variables
+Create a `.env` file in the repository root with your Google AI Studio key (and optional overrides):
 ```env
-GOOGLE_API_KEY="sua_chave_aqui"
-# Opcionais:
+GOOGLE_API_KEY="your_api_key_here"
+# Optional:
 # GEMINI_MODEL="gemini-3.8-flash"
 # USAR_CACHE_PDF="true"
 ```
 
-### 3. Adicionar os Relatórios
-Crie uma subpasta dentro de `reports/` utilizando **exatamente o código do ticker** da ação (ex: `reports/BBDC3/`, `reports/BBAS3/`) e adicione os PDFs trimestrais dentro dela.
+### 3. Add Quarterly Filings
+Create one subfolder per B3 ticker inside `reports/` (e.g., `reports/BBDC3/`, `reports/BBAS3/`) and place the quarterly PDF filings inside it.
 
-### 4. Iniciar o Pipeline
+### 4. Run the Pipeline
 ```bash
 python main.py
 ```
-Para ignorar o cache local de PDFs em uma execução específica:
+To bypass the local PDF SHA-256 cache for a specific run:
 ```bash
 python main.py --no-cache
 ```
-O terminal exibirá logs estruturados (`logging`) de extração, validação contábil (com reprocessamento seletivo se houver erro), chamadas de ferramentas e auditoria de compliance. Ao concluir cada ativo, o relatório final estará salvo em `reports/<TICKER>/Valuation_<TICKER>.md`.
+Structured `logging` output reports extraction progress, accounting audit checks, selective retries, tool calls, and compliance verification. Final reports are written to `reports/<TICKER>/Valuation_<TICKER>.md`.
 
 ---
 
-## 🧪 Qualidade de Código e Testes Automatizados
+## 🧪 Code Quality, CI & Automated Tests
 
-Toda a suíte em `tests/` é 100% determinística (zero consumo de tokens da API Gemini e sem acesso à rede):
+The entire test suite under `tests/` (84 tests) is **100% deterministic, offline, and zero-token** (no Gemini API or live network calls) and runs automatically via [GitHub Actions CI](.github/workflows/ci.yml) on every push and pull request:
 
 ```bash
 ruff check .
