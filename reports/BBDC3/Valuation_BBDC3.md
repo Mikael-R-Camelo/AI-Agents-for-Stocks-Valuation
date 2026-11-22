@@ -1,73 +1,87 @@
-# Relatório de Análise Fundamentalista: Banco Bradesco S.A. (BBDC3)
+# Relatório de Avaliação Fundamentalista: Banco Bradesco S.A. (BBDC3)
 
-## 1. Tabela Comparativa de Avaliação
+---
 
-A tabela abaixo sintetiza os resultados do modelo de desconto de dividendos (DDM de dois estágios com convergência perpétua) e os múltiplos implícitos para o exercício de 2026, confrontados com as cotações de mercado vigentes.
+## 1. Triangulação de Valuation (DDM vs. Décio Bazin vs. Benjamin Graham)
+
+A avaliação intrínseca do Banco Bradesco S.A. (BBDC3) foi estruturada a partir de três metodologias clássicas de análise fundamentalista, capturando diferentes dimensões do balanço e da capacidade de geração de valor da instituição. 
+
+O preço de tela de referência é de **R$ 12,74** por ação.
+
+### Tabela Comparativa de Modelos de Valuation
+
+| Metodologia / Métrica | Cenário Conservador | Cenário Mediano |
+| :--- | :---: | :---: |
+| **DDM de 2 Estágios** | R$ 17,10 *(Upside: +34,22% \| Margem: 25,50%)* | R$ 18,49 *(Upside: +45,10% \| Margem: 31,08%)* |
+| **Décio Bazin 6% (Clássico)** | R$ 20,17 *(Upside: +58,33% \| Margem: 36,84%)* | R$ 20,93 *(Upside: +64,30% \| Margem: 39,14%)* |
+| **Décio Bazin 8% (Juros BR)** | R$ 15,13 *(Upside: +18,75% \| Margem: 15,79%)* | R$ 15,70 *(Upside: +23,22% \| Margem: 18,85%)* |
+| **Benjamin Graham (Constante 22,5)** | R$ 30,29 *(Upside: +137,77% \| Margem: 57,94%)* | R$ 30,36 *(Upside: +138,28% \| Margem: 58,03%)* |
+| **Mínimo Triangulado** | **R$ 17,10** | **R$ 18,49** |
+| **Mediana Triangulada** | **R$ 20,17** | **R$ 20,93** |
+| **Máximo Triangulado** | **R$ 30,29** | **R$ 30,36** |
+| **Dispersão entre Métodos (%)** | **77,13%** | **64,20%** |
+| **Piso de Referência (Bazin 8% Juros BR)** | **R$ 15,13** | **R$ 15,70** |
+
+*Nota Metodológica da Triangulação:* As estatísticas de triangulação (`mínimo`, `mediana`, `máximo` e `dispersão`) computam estritamente um representante por família metodológica — DDM de 2 Estágios, Décio Bazin 6% Clássico e Benjamin Graham — com o propósito de evitar distorções de ponderação excessiva sobre os dividendos. O patamar de Bazin a 8% atua exclusivamente como piso conservador de exigência de retorno em virtude do patamar da taxa básica de juros e da tributação incidente.
+
+### Análise Técnica das Divergências entre Métodos
+
+1. **Modelo de Desconto de Dividendos (DDM de 2 Estágios):**  
+   O DDM reflete formalmente o custo de oportunidade do capital próprio bancário no Brasil, aplicando uma taxa de desconto ($K_e$) de 14,5% a.a. e convergência na perpetuidade a um crescimento nominal ($g$) de 4,0% a.a. (com payout terminal de 72,41%). Por ponderar o fluxo de caixa do acionista de forma descontada ao longo do tempo e o reinvestimento patrimonial necessário para expansão de balanço, o DDM entrega os valores mais alinhados à disciplina prudencial de capital exigida pelo setor financeiro.
+2. **Método Décio Bazin (6% Clássico vs. 8% Juros BR):**  
+   O método baseia-se no dividendo por ação (DPA) projetado — **R$ 1,2103** no conservador e **R$ 1,2559** no mediano. Ressalta-se que esses valores são **brutos**, ou seja, desconsideram a retenção de 15% de Imposto de Renda caso as distribuições se deem via Juros sobre o Capital Próprio (JCP). A faixa de 6% a 8% calibra a exigência de rentabilidade: o limiar de 8% estabelece um piso conservador frente a uma Selic restritiva, enquanto o limiar de 6% reflete a métrica histórica de proventos. Cabe destacar que o método de Bazin é contraindicado para teses de crescimento acelerado (*growth*) com retenção total de lucros, sendo aplicável a bancos maduros com fluxo previsível de distribuição de proventos.
+3. **Fórmula de Benjamin Graham ($\sqrt{22,5 \times LPA \times VPA}$):**  
+   Graham apresenta o preço justo mais elevado da triangulação (R$ 30,29 e R$ 30,36). A constante 22,5 (decorrente de P/L máximo de 15x e P/VP de 1,5x) foi formulada para o mercado norte-americano de meados do século XX. Em mercados emergentes com taxas de juros de dois dígitos e em setores intensivos em balanço como o bancário, o modelo tende a sobrestimar o valor intrínseco de empresas que negociam abaixo do valor patrimonial ($P/VP = 0,78x$), ao mesmo tempo em que subestima companhias *asset-light* de altíssimo retorno sobre o capital.
+
+---
+
+## 2. Tabela Comparativa de Lucros e Múltiplos
+
+Os múltiplos calculados demonstram o estágio de desconto das ações BBDC3 em relação ao patrimônio líquido consolidado e à capacidade de geração de lucro projetada para o exercício.
 
 | Métrica | Cenário Conservador | Cenário Mediano | Referência Atual |
 | :--- | :---: | :---: | :---: |
-| **Preço por Ação (R$)** | **R$ 17,10** | **R$ 18,49** | R$ 12,74 |
-| **Market Cap Justo (R$)** | R$ 191.160.662.765,48 | R$ 206.643.660.666,55 | R$ 142.418.238.437,02 |
-| **Upside / Downside (%)** | +34,22% | +45,10% | — |
-| **Margem de Segurança (%)** | 25,50% | 31,08% | — |
-| **Lucro Líquido Projetado (R$)** | R$ 27.960.000.000,00 | R$ 28.079.000.000,00 | R$ 20.970.000.000,00 *(acum. 9M)* |
-| **Lucro por Ação - LPA (R$)** | R$ 2,50 | R$ 2,51 | — |
-| **Valor Patrimonial p/ Ação - VPA (R$)** | R$ 16,31 | R$ 16,31 | R$ 16,31 |
-| **Preço sobre Lucro (P/L)** | 5,09x | 5,07x | — |
-| **Preço sobre Valor Patrimonial (P/VP)**| 0,78x | 0,78x | 0,78x |
-| **ROE Projetado / Calculado (%)** | 15,34% | 15,40% | — |
-| **Crescimento Estágio 1 - $g_1$ (%)** | 5,86% | 7,80% | — |
-| **Payout Estágio 1 Utilizado (%)** | 48,39% | 50,00% | — |
-| **Payout Terminal Perpétuo (%)** | 72,41% | 72,41% | — |
+| **Lucro Líquido Projetado (R$)** | R$ 27,96 bi | R$ 28,08 bi | R$ 20,97 bi *(Soma 9M26)* |
+| **LPA Projetado (Forward)** | R$ 2,50 | R$ 2,51 | N/A |
+| **VPA Atual (3T26)** | R$ 16,31 | R$ 16,31 | R$ 16,31 |
+| **P/L Projetado (Forward)** | 5,09x | 5,07x | N/A |
+| **P/VP Atual** | 0,78x | 0,78x | 0,78x |
+| **ROE Calculado (Implícito)** | 15,34% | 15,40% | 15,60% *(3T26 anualizado)* |
+| **Payout Adotado** | 48,39% | 50,00% | 48,39% *(Histórico)* |
+
+*Nota explicativa sobre múltiplos:* Como há 1 trimestre projetado para a conclusão do ano fiscal (3 trimestres realizados e 1 projetado), as métricas de LPA e P/L são apresentadas sob a ótica **Forward (Projetada)**, refletindo a anualização ponderada dos resultados, podendo diferir do indicador P/L LTM (últimos 12 meses) reportado em terminais financeiros convencionais. O `VPA Atual` e o `P/VP Atual` baseiam-se estritamente no balanço patrimonial publicado no 3T26.
 
 ---
 
-## 2. Parâmetros Utilizados na Avaliação
+## 3. Parâmetros Utilizados na Avaliação
 
-Os parâmetros estruturais do modelo DDM consideram a dinâmica de capital de uma instituição financeira regulada, utilizando a convergência de retenção de capital para suportar o crescimento na perpetuidade:
+Os parâmetros aplicados na modelagem quantitativa refletem as condições de balanço mais recentes e os pressupostos regulatórios e macroeconômicos aplicáveis:
 
-* **Custo de Capital Próprio ($K_e$ / Taxa de Desconto):** 14,50% ao ano.
-* **Crescimento na Perpetuidade ($g$ perpétuo):** 4,00% ao ano.
-* **Payout Terminal Sustentável:** 72,41% (derivado de $1 - (g / K_e)$ sob a premissa de convergência do ROE de longo prazo ao custo de oportunidade de capital).
-* **Momento Operacional Definido:** Recuperação (*Turnaround* gradual de rentabilidade).
-* **Base Acionária do PDF Mais Recente:** 11.178.825.623 ações totais (conforme DRE/Balanço do 3T26).
-* **Patrimônio Líquido do PDF Mais Recente:** R$ 182.282.051.282,00.
-* **Fonte do Payout Histórico:** *Fallback* via indicador `yfinance_info_payoutRatio_fallback` (48,39% no conservador; 50,00% no mediano informado no release).
-* **Trimestres Realizados / Projetados:** 3 trimestres realizados (soma acumulada de R$ 20,97 bilhões) e 1 trimestre projetado para a conclusão do exercício.
-
-### Aviso de Auditoria e Ressalva de Dados
-> **Aviso de Auditoria:** A linha de dividendos declarados na Demonstração dos Fluxos de Caixa (DFC) da base primária de dados de mercado retornou zerada/ausente no período — distorção comum em emissores listados na B3 que remuneram primordialmente via Juros sobre o Capital Próprio (JCP). Dessa forma, utilizou-se o *fallback* verificado de `info['payoutRatio']` de 48,39% como taxa de distribuição observada.
-
----
-
-## 3. Análise dos Fundamentos e Desempenho Bancário
-
-O Bradesco segue em trajetória de recomposição de rentabilidade ao longo dos três trimestres de 2026:
-
-1. **Qualidade do Lucro Recorrente e Rentabilidade (ROE):**
-   A instituição acumulou lucro líquido recorrente de R$ 20,97 bilhões nos primeiros nove meses de 2026 (R$ 6,81 bi no 1T26, R$ 7,05 bi no 2T26 e R$ 7,11 bi no 3T26). O ROE reportado no 3T26 alcançou 15,60%, alinhando-se aos múltiplos de saída calculados de 15,34% (conservador) e 15,40% (mediano).
-2. **Margem Financeira e Eficiência Operacional:**
-   A margem financeira total manteve expansão sequencial (+16,4% a/a no 1T26, +4,1% t/t no 2T26 e +2,4% t/t no 3T26), ancorada no crescimento da carteira com foco em garantias e na margem com mercado. O Índice de Eficiência Operacional consolidou melhora consistente, caindo de 46,9% (1T26) para 46,5% (2T26) e atingindo 45,4% no 3T26.
-3. **Inadimplência, PDD e Qualidade de Ativos:**
-   O indicador de inadimplência acima de 90 dias apresentou inflexão desfavorável, passando de 4,2% no 1T26 para 4,3% no 2T26 e 4,6% no 3T26. Esse movimento decorre de pressões em crédito para MPMEs e carteiras de capital de giro (FGI/FGO e Banco John Deere), o que acarretou um aumento de 6,6% t/t na despesa de PDD expandida no 3T26.
-4. **Divisão de Seguros e Capitalização:**
-   A operação seguradora seguiu como principal amortecedor de rentabilidade do conglomerado, registrando ROAE de 22,0% no 3T26. Adicionalmente, a homologação pelo Banco Central do aumento de capital de R$ 10 bilhões reforçou os índices de solvência e a margem de Basileia, garantindo capacidade de expansão colateralizada sem pressionar a estrutura de capital.
+* **Custo de Capital Próprio ($K_e$):** 14,50% a.a. (taxa de desconto nominal).
+* **Crescimento Perpétuo ($g$):** 4,00% a.a.
+* **Payout Sustentável Terminal:** 72,41% (estimado no modelo de convergência de longo prazo).
+* **Dividend Yields Mínimos de Bazin:** 6,00% (Clássico) e 8,00% (Conservador / Juros Brasil).
+* **Constante de Avaliação de Graham:** 22,5.
+* **Momento Operacional:** Classificado como `recuperacao`.
+* **Base Acionária Analisada:** 11.178.825.623 ações ordinárias e preferenciais (extraída do demonstrativo do 3T26).
+* **Patrimônio Líquido Contábil:** R$ 182.282.051.282,00 (posição em 30 de setembro de 2026).
+* **Taxa de Payout Utilizada:** 48,39% no cenário conservador (obtida via fallback de dados de distribuição e JCP) e 50,00% no cenário mediano (reportado nas divulgações recentes).
+* **Aviso de Auditoria dos Dados:** *A linha de dividendos na DFC do Yahoo Finance retornou zerada/ausente (ocorrência comum em empresas listadas na B3 que utilizam majoritariamente proventos via Juros sobre Capital Próprio); foi aplicado com sucesso o fallback determinístico `info['payoutRatio']`.*
 
 ---
 
-## 4. Perspectivas da Gestão
+## 4. Perspectivas da Gestão e Leitura Qualitativa
 
-Ao longo de 2026, a comunicação da diretoria do Bradesco manteve um padrão de cautela operacional associado à disciplina de custos:
+A trajetória observada ao longo dos três trimestres de 2026 aponta para uma recuperação sustentada dos resultados operacionais, acompanhada de cautela na originação:
 
-* **1T26:** Construtiva quanto à execução do plano de transformação e investimentos em GenAI, mas com postura moderada a conservadora na concessão em MPME e crédito rural.
-* **2T26:** Otimismo quanto à recomposição do ROAE para níveis de 16,2%, balanceado por alertas expressos sobre o ambiente macroeconômico restritivo, juros elevados e taxa de endividamento das famílias.
-* **3T26:** Confirmação do avanço da digitalização e celebração da homologação do aumento de capital de R$ 10 bilhões, contrapostos pelo reconhecimento do estresse na qualidade do crédito de linhas de capital de giro e pela necessidade de calibração fina nos modelos de concessão diante do avanço da NPL (>90d para 4,6%).
+* **Evolução Operacional (1T26 ao 3T26):** O banco entregou expansão sequencial do lucro líquido recorrente (R$ 6,81 bi no 1T26, R$ 7,05 bi no 2T26 e R$ 7,11 bi no 3T26), ancorada no crescimento da margem financeira com clientes e mercado, além do papel contracíclico e rentável da divisão de Seguros (com ROAE de 22,0% no 3T26). Houve ganho contínuo de produtividade, com o índice de eficiência operacional melhorando de 46,9% para 45,4%.
+* **Qualidade de Ativos e Riscos:** A inadimplência acima de 90 dias apresentou leve deterioração gradual (4,2% no 1T26, 4,3% no 2T26 e 4,6% no 3T26), motivada por pressões em linhas de crédito de MPME, capital de giro com garantia pública (FGI/FGO) e carteiras específicas. Em resposta, a despesa de PDD expandida subiu 6,6% t/t no 3T26, justificando o foco da administração em produtos colateralizados e consignados.
+* **Posicionamento de Capital:** Destaca-se a homologação do aumento de capital de R$ 10 bilhões pelo Banco Central no 3T26, medida que fortalece o capital principal e o índice de Basileia, conferindo flexibilidade para sustentar o plano de transformação tecnológica e absorver a volatilidade do ciclo econômico.
 
-### Avaliação de Cenários
-Embora o **Cenário Mediano (Preço Justo de R$ 18,49; Upside de 45,10%)** represente com fidelidade o ritmo corrente de eficiência (45,4%) e a resiliência das receitas de seguros e margem financeira, **o tom da administração justifica uma leitura atenta ao Cenário Conservador (Preço Justo de R$ 17,10; Upside de 34,22%)**. O repique do NPL para 4,6% no 3T26 e o crescimento da PDD demandam cautela quanto à sustentabilidade do ROE sem novos aumentos no custo do crédito nos trimestres subsequentes.
+### Conclusão sobre Cenários
+
+O tom da administração equilibra a evolução do plano de transformação e a recomposição do ROAE com uma postura prudente diante de juros elevados e endividamento das famílias. Considerando a elevação marginal da PDD e da inadimplência no 3T26, **justifica-se priorizar a leitura do Cenário Conservador**, que ancora o valor intrínseco no DDM a **R$ 17,10** (margem de segurança de 25,50%) e no Bazin 8% a **R$ 15,13** (margem de segurança de 15,79%), resguardando a análise contra eventuais pressões adicionais no custo do crédito. O Cenário Mediano (**R$ 18,49** no DDM) serve de balizador caso a convergência da inadimplência ocorra em compasso com ganhos de eficiência.
 
 ---
 
-## 5. Nota de Isenção (Disclaimer)
-
-Este relatório foi elaborado com fins exclusivamente informativos e analíticos, com base em dados quantitativos padronizados e demonstrações financeiras públicas do emissor. Este documento **não constitui, sob nenhuma hipótese, oferta, solicitação de oferta, aconselhamento financeiro ou recomendação expressa de compra, venda ou manutenção** de quaisquer valores mobiliários ou instrumentos financeiros referenciados. As projeções refletem premissas de modelos teóricos de avaliação sujeitas às oscilações de mercado e a fatores macroeconômicos imprevistos. A tomada de decisão de investimento cabe unicamente ao próprio investidor, conforme seu perfil de risco e objetivos financeiros.
+*Isenção de Responsabilidade: O presente material foi elaborado com propósitos exclusivamente informativos e educacionais, fundamentado em cálculos matemáticos determinísticos e divulgações públicas da companhia. Não configura, sob nenhuma hipótese, oferta, solicitação de compra ou venda, nem recomendação expressa de alocação em qualquer valor mobiliário mencionado.*

@@ -4,6 +4,12 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from langchain_core.messages import AnyMessage
 from pydantic import BaseModel, Field
 
+from config import (
+    CONSTANTE_GRAHAM_PADRAO,
+    YIELD_MINIMO_BAZIN_CONSERVADOR,
+    YIELD_MINIMO_BAZIN_PADRAO,
+)
+
 MomentoOperacional = Literal["recuperacao", "estavel", "deteriorando"]
 
 
@@ -24,6 +30,9 @@ class ParametrosAvaliacao(BaseModel):
     trimestre_mais_recente: str
     taxa_desconto: float
     crescimento_perpetuo: float
+    yield_minimo_bazin_padrao: float = YIELD_MINIMO_BAZIN_PADRAO
+    yield_minimo_bazin_conservador: float = YIELD_MINIMO_BAZIN_CONSERVADOR
+    constante_graham: float = CONSTANTE_GRAHAM_PADRAO
 
 
 class ProjecaoLucrosAnuais(BaseModel):
@@ -54,6 +63,64 @@ class ValuationCenario(BaseModel):
     crescimento_perpetuo_pct: float
 
 
+class ValuationBazin(BaseModel):
+    preco_justo: float
+    margem_seguranca: float
+    upside_downside: float
+    dpa_utilizado: float
+    yield_minimo: float
+    yield_minimo_pct: float
+
+
+class ValuationBazinCenario(BaseModel):
+    dy_6: ValuationBazin | None = None
+    dy_8: ValuationBazin | None = None
+    erro_dy_6: str | None = None
+    erro_dy_8: str | None = None
+
+
+class ValuationGraham(BaseModel):
+    preco_justo: float
+    margem_seguranca: float
+    upside_downside: float
+    lpa_utilizado: float
+    vpa_utilizado: float
+    constante_graham: float
+
+
+class ResumoTriangulacaoCenario(BaseModel):
+    ddm_preco_justo: float | None = None
+    ddm_margem_seguranca: float | None = None
+    ddm_upside_downside: float | None = None
+    bazin_6_preco_justo: float | None = None
+    bazin_6_margem_seguranca: float | None = None
+    bazin_6_upside_downside: float | None = None
+    bazin_8_preco_justo: float | None = None
+    bazin_8_margem_seguranca: float | None = None
+    bazin_8_upside_downside: float | None = None
+    graham_preco_justo: float | None = None
+    graham_margem_seguranca: float | None = None
+    graham_upside_downside: float | None = None
+    modelos_triangulados: list[str] = Field(default_factory=list)
+    modelos_validos: int = 0
+    minimo: float | None = None
+    mediana: float | None = None
+    maximo: float | None = None
+    dispersao_pct: float | None = None
+    piso_bazin_8_juros_brasil: float | None = None
+
+
+class TriangulacaoValuation(BaseModel):
+    nota_metodologica: str = (
+        "As estatísticas de triangulação (mínimo, mediana, máximo e dispersão) consideram "
+        "estritamente um representante por metodologia (DDM de 2 Estágios, Bazin 6% Clássico "
+        "e Benjamin Graham) para evitar peso duplo ao método Bazin; Bazin 8% atua como piso "
+        "conservador de referência para o cenário de juros brasileiros e IR sobre JCP."
+    )
+    conservador: ResumoTriangulacaoCenario
+    mediano: ResumoTriangulacaoCenario
+
+
 class ResultadoQuantitativo(BaseModel):
     ticker: str
     setor: str
@@ -68,6 +135,13 @@ class ResultadoQuantitativo(BaseModel):
     valuation_mediano: ValuationCenario | None = None
     erro_valuation_conservador: str | None = None
     erro_valuation_mediano: str | None = None
+    valuation_bazin_conservador: ValuationBazinCenario | None = None
+    valuation_bazin_mediano: ValuationBazinCenario | None = None
+    valuation_graham_conservador: ValuationGraham | None = None
+    valuation_graham_mediano: ValuationGraham | None = None
+    erro_valuation_graham_conservador: str | None = None
+    erro_valuation_graham_mediano: str | None = None
+    triangulacao: TriangulacaoValuation | None = None
     avisos: list[str] = Field(default_factory=list)
 
 

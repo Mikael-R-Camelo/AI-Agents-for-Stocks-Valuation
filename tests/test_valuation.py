@@ -2,20 +2,41 @@ import math
 
 import pytest
 
-from config import CRESCIMENTO_PERPETUO_PADRAO, TAXA_DESCONTO_PADRAO
-from tools.valuation import fluxo_de_caixa_futuro_buffet
+from config import (
+    CONSTANTE_GRAHAM_PADRAO,
+    CRESCIMENTO_PERPETUO_PADRAO,
+    TAXA_DESCONTO_PADRAO,
+    YIELD_MINIMO_BAZIN_CONSERVADOR,
+    YIELD_MINIMO_BAZIN_PADRAO,
+)
+from tools.valuation import (
+    calcular_preco_teto_bazin,
+    calcular_valor_intrinseco_graham,
+    fluxo_de_caixa_futuro_buffet,
+)
 
 
 def test_constantes_oficiais_valuation() -> None:
     assert TAXA_DESCONTO_PADRAO == 0.145
     assert CRESCIMENTO_PERPETUO_PADRAO == 0.04
+    assert YIELD_MINIMO_BAZIN_PADRAO == 0.06
+    assert YIELD_MINIMO_BAZIN_CONSERVADOR == 0.08
+    assert CONSTANTE_GRAHAM_PADRAO == 22.5
 
 
 def test_schema_obrigatorio_da_tool_valuation() -> None:
-    schema = fluxo_de_caixa_futuro_buffet.args_schema.model_json_schema()
-    required = set(schema.get("required", []))
+    schema_ddm = fluxo_de_caixa_futuro_buffet.args_schema.model_json_schema()
+    required_ddm = set(schema_ddm.get("required", []))
     assert {"lucro_base", "payout", "roe", "num_acoes", "preco_atual"}.issubset(
-        required
+        required_ddm
+    )
+
+    schema_bazin = calcular_preco_teto_bazin.args_schema.model_json_schema()
+    assert {"dpa", "preco_atual"}.issubset(set(schema_bazin.get("required", [])))
+
+    schema_graham = calcular_valor_intrinseco_graham.args_schema.model_json_schema()
+    assert {"lpa", "vpa", "preco_atual"}.issubset(
+        set(schema_graham.get("required", []))
     )
 
 
@@ -121,4 +142,124 @@ def test_ddm_rejeita_booleano_como_numero() -> None:
             roe=0.15,
             num_acoes=100.0,
             preco_atual=10.0,
+        )
+
+
+def test_bazin_classico_6_e_conservador_8_bbdc3() -> None:
+    """Valida Décio Bazin nos patamares 6% (clássico) e 8% (juros Brasil) para BBDC3."""
+    res_6 = calcular_preco_teto_bazin.invoke({"dpa": 1.25, "preco_atual": 13.44})
+    assert res_6["preco_justo"] == 20.83
+    assert res_6["margem_seguranca"] == 35.49
+    assert res_6["upside_downside"] == 55.01
+    assert res_6["dpa_utilizado"] == 1.25
+    assert res_6["yield_minimo"] == 0.06
+    assert res_6["yield_minimo_pct"] == 6.0
+
+    res_8 = calcular_preco_teto_bazin.invoke(
+        {
+            "dpa": 1.25,
+            "preco_atual": 13.44,
+            "yield_minimo": YIELD_MINIMO_BAZIN_CONSERVADOR,
+        }
+    )
+    assert res_8["preco_justo"] == pytest.approx(15.625, abs=0.01)
+    assert res_8["margem_seguranca"] == 13.98
+    assert res_8["upside_downside"] == 16.26
+    assert res_8["dpa_utilizado"] == 1.25
+    assert res_8["yield_minimo"] == 0.08
+    assert res_8["yield_minimo_pct"] == 8.0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"dpa": 0.0},
+        {"dpa": -1.25},
+        {"preco_atual": 0.0},
+        {"preco_atual": -13.44},
+        {"yield_minimo": 0.0},
+        {"yield_minimo": -0.06},
+        {"yield_minimo": 1.0},
+        {"yield_minimo": 6.0},
+        {"dpa": math.nan},
+        {"preco_atual": math.inf},
+        {"yield_minimo": math.nan},
+    ],
+)
+def test_bazin_guardas_de_dominio(overrides: dict) -> None:
+    base = {"dpa": 1.25, "preco_atual": 13.44, "yield_minimo": 0.06}
+    base.update(overrides)
+    with pytest.raises(ValueError):
+        calcular_preco_teto_bazin.invoke(base)
+
+
+def test_bazin_rejeita_booleano_como_numero() -> None:
+    with pytest.raises(ValueError):
+        calcular_preco_teto_bazin.func(
+            dpa=True,  # type: ignore[arg-type]
+            preco_atual=13.44,
+            yield_minimo=0.06,
+        )
+    with pytest.raises(ValueError):
+        calcular_preco_teto_bazin.func(
+            dpa=1.25,
+            preco_atual=13.44,
+            yield_minimo=False,  # type: ignore[arg-type]
+        )
+
+
+def test_graham_equivalencia_analitica_bbdc3() -> None:
+    """Valida fórmula clássica de Benjamin Graham (22,5) para BBDC3 (LPA=2,50, VPA=16,31)."""
+    res = calcular_valor_intrinseco_graham.invoke(
+        {"lpa": 2.50, "vpa": 16.31, "preco_atual": 13.44}
+    )
+    assert res["preco_justo"] == 30.29
+    assert res["margem_seguranca"] == 55.63
+    assert res["upside_downside"] == 125.37
+    assert res["lpa_utilizado"] == 2.5
+    assert res["vpa_utilizado"] == 16.31
+    assert res["constante_graham"] == 22.5
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"lpa": 0.0},
+        {"lpa": -2.50},
+        {"vpa": 0.0},
+        {"vpa": -16.31},
+        {"lpa": -2.0, "vpa": -10.0},  # Guarda explícita: produto seria positivo sem validação individual
+        {"preco_atual": 0.0},
+        {"preco_atual": -13.44},
+        {"constante_graham": 0.0},
+        {"constante_graham": -22.5},
+        {"lpa": math.nan},
+        {"vpa": math.inf},
+        {"constante_graham": math.nan},
+    ],
+)
+def test_graham_guardas_de_dominio(overrides: dict) -> None:
+    base = {
+        "lpa": 2.50,
+        "vpa": 16.31,
+        "preco_atual": 13.44,
+        "constante_graham": 22.5,
+    }
+    base.update(overrides)
+    with pytest.raises(ValueError):
+        calcular_valor_intrinseco_graham.invoke(base)
+
+
+def test_graham_rejeita_booleano_como_numero() -> None:
+    with pytest.raises(ValueError):
+        calcular_valor_intrinseco_graham.func(
+            lpa=True,  # type: ignore[arg-type]
+            vpa=16.31,
+            preco_atual=13.44,
+        )
+    with pytest.raises(ValueError):
+        calcular_valor_intrinseco_graham.func(
+            lpa=2.50,
+            vpa=True,  # type: ignore[arg-type]
+            preco_atual=13.44,
         )

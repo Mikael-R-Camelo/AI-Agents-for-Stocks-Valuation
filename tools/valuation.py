@@ -2,7 +2,22 @@ import math
 
 from langchain_core.tools import tool
 
-from config import CRESCIMENTO_PERPETUO_PADRAO, TAXA_DESCONTO_PADRAO
+from config import (
+    CONSTANTE_GRAHAM_PADRAO,
+    CRESCIMENTO_PERPETUO_PADRAO,
+    TAXA_DESCONTO_PADRAO,
+    YIELD_MINIMO_BAZIN_PADRAO,
+)
+
+
+def _validar_numero_finito(nome: str, valor: object) -> None:
+    """Garante que o parâmetro seja int/float finito e não booleano."""
+    if (
+        isinstance(valor, bool)
+        or not isinstance(valor, (int, float))
+        or not math.isfinite(valor)
+    ):
+        raise ValueError(f"Parâmetro '{nome}' deve ser um número finito válido.")
 
 
 @tool
@@ -32,7 +47,7 @@ def fluxo_de_caixa_futuro_buffet(
     - num_acoes: Número TOTAL de ações (ON + PN) extraído do PDF (> 0).
     - preco_atual: Cotação atual da ação em R$ (> 0).
     - taxa_desconto: Custo de capital próprio Ke em decimal (padrão: 0.145 para 14,5%).
-    - crescimento_perpetuo: Crescimento perpétuo g em decimal (padrão: 0.05 para 5%).
+    - crescimento_perpetuo: Crescimento perpétuo g em decimal (padrão: 0.04 para 4%).
     - anos_projecao: Horizonte explícito de projeção em anos (>= 1, padrão: 4).
     """
     parametros_numericos = {
@@ -45,12 +60,7 @@ def fluxo_de_caixa_futuro_buffet(
         "preco_atual": preco_atual,
     }
     for nome, valor in parametros_numericos.items():
-        if (
-            isinstance(valor, bool)
-            or not isinstance(valor, (int, float))
-            or not math.isfinite(valor)
-        ):
-            raise ValueError(f"Parâmetro '{nome}' deve ser um número finito válido.")
+        _validar_numero_finito(nome, valor)
 
     if anos_projecao < 1:
         raise ValueError("anos_projecao deve ser maior ou igual a 1.")
@@ -79,7 +89,7 @@ def fluxo_de_caixa_futuro_buffet(
         )
     if not (0 <= crescimento_perpetuo < 1):
         raise ValueError(
-            "crescimento_perpetuo deve ser um decimal no intervalo [0, 1) (ex: 0.05 para 5%)."
+            "crescimento_perpetuo deve ser um decimal no intervalo [0, 1) (ex: 0.04 para 4%)."
         )
     if taxa_desconto <= crescimento_perpetuo:
         raise ValueError(
@@ -139,4 +149,106 @@ def fluxo_de_caixa_futuro_buffet(
         "Preço Teto / Justo (R$)": round(preco_justo, 2),
         "Margem de Segurança (%)": round(margem_seguranca * 100, 2),
         "Upside Real (%)": round(upside_tradicional * 100, 2),
+    }
+
+
+@tool
+def calcular_preco_teto_bazin(
+    dpa: float,
+    preco_atual: float,
+    yield_minimo: float = YIELD_MINIMO_BAZIN_PADRAO,
+) -> dict[str, float]:
+    """
+    Calcula o Preço Teto pelo método de Décio Bazin:
+    preco_justo = dpa / yield_minimo.
+
+    Atenção às unidades obrigatórias:
+    - dpa: Dividendo (ou JCP bruto) por ação anual em R$ (> 0).
+    - preco_atual: Cotação atual da ação em R$ (> 0).
+    - yield_minimo: Dividend Yield mínimo exigido em decimal no intervalo (0, 1)
+      (ex: 0.06 para 6% clássico ou 0.08 para 8% conservador).
+    """
+    for nome, valor in {
+        "dpa": dpa,
+        "preco_atual": preco_atual,
+        "yield_minimo": yield_minimo,
+    }.items():
+        _validar_numero_finito(nome, valor)
+
+    if dpa <= 0:
+        raise ValueError(
+            "dpa deve ser estritamente positivo (> 0) para o método Décio Bazin."
+        )
+    if preco_atual <= 0:
+        raise ValueError("preco_atual deve ser estritamente positivo (> 0).")
+    if not (0 < yield_minimo < 1):
+        raise ValueError(
+            "yield_minimo deve ser um decimal no intervalo (0, 1) "
+            "(ex: 0.06 para 6% ou 0.08 para 8%)."
+        )
+
+    preco_justo = float(dpa) / float(yield_minimo)
+    margem_seguranca = (preco_justo - float(preco_atual)) / preco_justo
+    upside_downside = (preco_justo / float(preco_atual)) - 1.0
+
+    return {
+        "preco_justo": round(preco_justo, 2),
+        "margem_seguranca": round(margem_seguranca * 100, 2),
+        "upside_downside": round(upside_downside * 100, 2),
+        "dpa_utilizado": round(float(dpa), 4),
+        "yield_minimo": float(yield_minimo),
+        "yield_minimo_pct": round(float(yield_minimo) * 100, 2),
+    }
+
+
+@tool
+def calcular_valor_intrinseco_graham(
+    lpa: float,
+    vpa: float,
+    preco_atual: float,
+    constante_graham: float = CONSTANTE_GRAHAM_PADRAO,
+) -> dict[str, float]:
+    """
+    Calcula o Valor Intrínseco pela fórmula clássica de Benjamin Graham:
+    preco_justo = sqrt(constante_graham * lpa * vpa).
+
+    Atenção às unidades e guardas obrigatórias:
+    - lpa: Lucro por Ação anual em R$ (estritamente > 0).
+    - vpa: Valor Patrimonial por Ação em R$ (estritamente > 0).
+    - preco_atual: Cotação atual da ação em R$ (> 0).
+    - constante_graham: Multiplicador de Graham (padrão: 22.5 = 15 x 1.5).
+    """
+    for nome, valor in {
+        "lpa": lpa,
+        "vpa": vpa,
+        "preco_atual": preco_atual,
+        "constante_graham": constante_graham,
+    }.items():
+        _validar_numero_finito(nome, valor)
+
+    # Guardas individuais ANTES da multiplicação (impede (-lpa) * (-vpa) > 0)
+    if lpa <= 0:
+        raise ValueError(
+            "lpa deve ser estritamente positivo (> 0) para a fórmula de Benjamin Graham."
+        )
+    if vpa <= 0:
+        raise ValueError(
+            "vpa deve ser estritamente positivo (> 0) para a fórmula de Benjamin Graham."
+        )
+    if preco_atual <= 0:
+        raise ValueError("preco_atual deve ser estritamente positivo (> 0).")
+    if constante_graham <= 0:
+        raise ValueError("constante_graham deve ser estritamente positiva (> 0).")
+
+    preco_justo = math.sqrt(float(constante_graham) * float(lpa) * float(vpa))
+    margem_seguranca = (preco_justo - float(preco_atual)) / preco_justo
+    upside_downside = (preco_justo / float(preco_atual)) - 1.0
+
+    return {
+        "preco_justo": round(preco_justo, 2),
+        "margem_seguranca": round(margem_seguranca * 100, 2),
+        "upside_downside": round(upside_downside * 100, 2),
+        "lpa_utilizado": round(float(lpa), 4),
+        "vpa_utilizado": round(float(vpa), 4),
+        "constante_graham": float(constante_graham),
     }

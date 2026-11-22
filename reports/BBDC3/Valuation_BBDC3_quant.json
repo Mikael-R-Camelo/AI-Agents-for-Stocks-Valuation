@@ -20,7 +20,10 @@
     "patrimonio_liquido_pdf": 182282051282.0,
     "trimestre_mais_recente": "3T26",
     "taxa_desconto": 0.145,
-    "crescimento_perpetuo": 0.04
+    "crescimento_perpetuo": 0.04,
+    "yield_minimo_bazin_padrao": 0.06,
+    "yield_minimo_bazin_conservador": 0.08,
+    "constante_graham": 22.5
   },
   "projecao_lucros": {
     "trimestres_realizados": 3,
@@ -66,6 +69,117 @@
   },
   "erro_valuation_conservador": null,
   "erro_valuation_mediano": null,
+  "valuation_bazin_conservador": {
+    "dy_6": {
+      "preco_justo": 20.17,
+      "margem_seguranca": 36.84,
+      "upside_downside": 58.33,
+      "dpa_utilizado": 1.2103,
+      "yield_minimo": 0.06,
+      "yield_minimo_pct": 6.0
+    },
+    "dy_8": {
+      "preco_justo": 15.13,
+      "margem_seguranca": 15.79,
+      "upside_downside": 18.75,
+      "dpa_utilizado": 1.2103,
+      "yield_minimo": 0.08,
+      "yield_minimo_pct": 8.0
+    },
+    "erro_dy_6": null,
+    "erro_dy_8": null
+  },
+  "valuation_bazin_mediano": {
+    "dy_6": {
+      "preco_justo": 20.93,
+      "margem_seguranca": 39.14,
+      "upside_downside": 64.3,
+      "dpa_utilizado": 1.2559,
+      "yield_minimo": 0.06,
+      "yield_minimo_pct": 6.0
+    },
+    "dy_8": {
+      "preco_justo": 15.7,
+      "margem_seguranca": 18.85,
+      "upside_downside": 23.22,
+      "dpa_utilizado": 1.2559,
+      "yield_minimo": 0.08,
+      "yield_minimo_pct": 8.0
+    },
+    "erro_dy_6": null,
+    "erro_dy_8": null
+  },
+  "valuation_graham_conservador": {
+    "preco_justo": 30.29,
+    "margem_seguranca": 57.94,
+    "upside_downside": 137.77,
+    "lpa_utilizado": 2.5012,
+    "vpa_utilizado": 16.306,
+    "constante_graham": 22.5
+  },
+  "valuation_graham_mediano": {
+    "preco_justo": 30.36,
+    "margem_seguranca": 58.03,
+    "upside_downside": 138.28,
+    "lpa_utilizado": 2.5118,
+    "vpa_utilizado": 16.306,
+    "constante_graham": 22.5
+  },
+  "erro_valuation_graham_conservador": null,
+  "erro_valuation_graham_mediano": null,
+  "triangulacao": {
+    "nota_metodologica": "As estatísticas de triangulação (mínimo, mediana, máximo e dispersão) consideram estritamente um representante por metodologia (DDM de 2 Estágios, Bazin 6% Clássico e Benjamin Graham) para evitar peso duplo ao método Bazin; Bazin 8% atua como piso conservador de referência para o cenário de juros brasileiros e IR sobre JCP.",
+    "conservador": {
+      "ddm_preco_justo": 17.1,
+      "ddm_margem_seguranca": 25.5,
+      "ddm_upside_downside": 34.22,
+      "bazin_6_preco_justo": 20.17,
+      "bazin_6_margem_seguranca": 36.84,
+      "bazin_6_upside_downside": 58.33,
+      "bazin_8_preco_justo": 15.13,
+      "bazin_8_margem_seguranca": 15.79,
+      "bazin_8_upside_downside": 18.75,
+      "graham_preco_justo": 30.29,
+      "graham_margem_seguranca": 57.94,
+      "graham_upside_downside": 137.77,
+      "modelos_triangulados": [
+        "ddm",
+        "bazin_6",
+        "graham"
+      ],
+      "modelos_validos": 3,
+      "minimo": 17.1,
+      "mediana": 20.17,
+      "maximo": 30.29,
+      "dispersao_pct": 77.13,
+      "piso_bazin_8_juros_brasil": 15.13
+    },
+    "mediano": {
+      "ddm_preco_justo": 18.49,
+      "ddm_margem_seguranca": 31.08,
+      "ddm_upside_downside": 45.1,
+      "bazin_6_preco_justo": 20.93,
+      "bazin_6_margem_seguranca": 39.14,
+      "bazin_6_upside_downside": 64.3,
+      "bazin_8_preco_justo": 15.7,
+      "bazin_8_margem_seguranca": 18.85,
+      "bazin_8_upside_downside": 23.22,
+      "graham_preco_justo": 30.36,
+      "graham_margem_seguranca": 58.03,
+      "graham_upside_downside": 138.28,
+      "modelos_triangulados": [
+        "ddm",
+        "bazin_6",
+        "graham"
+      ],
+      "modelos_validos": 3,
+      "minimo": 18.49,
+      "mediana": 20.93,
+      "maximo": 30.36,
+      "dispersao_pct": 64.2,
+      "piso_bazin_8_juros_brasil": 15.7
+    }
+  },
   "avisos": [
     "Linha de dividendos na DFC do Yahoo Finance retornou zerada/ausente (comum em empresas B3 com JCP); utilizado fallback info['payoutRatio']."
   ]

@@ -71,20 +71,30 @@ To eliminate LLM arithmetic hallucinations, **100% of financial calculations exe
   * `buscar_dados_mercado_yfinance`: Fetches **exclusively** current share price (`preco_atual`, with `fast_info` fallback) and currency on B3. **Structural safeguard:** intentionally omits `sharesOutstanding` and `bookValue` from the payload to prevent ON/PN share-class distortions—`numero_total_acoes` and `patrimonio_liquido` are sourced strictly from official PDF filings.
   * `buscar_medias_historicas_yfinance`: Computes **4-year historical average ROE** across Income Statement and Balance Sheet with IFRS accounting line-item aliases.
   * `buscar_payout_medio_historico_yfinance`: Computes **4-year historical average Payout** across Income Statement and Cash Flow (summing ON+PN dividends when split), filters out non-recurring distortions `> 150%`, applies an **automatic fallback to `info["payoutRatio"]`** when cash-flow dividends are zero/missing (common for Brazilian banks distributing via **JCP**), and explicitly returns both `payout_medio_observado` and `payout_sustentavel` (capped at `1.0` for DDM compatibility).
-* **Multiples & Valuation (`calcular_multiplos_basicos` & `fluxo_de_caixa_futuro_buffet`):**
+* **Multiples & Valuation Triangulation (`calcular_multiplos_basicos`, `fluxo_de_caixa_futuro_buffet`, `calcular_preco_teto_bazin`, `calcular_valor_intrinseco_graham`):**
   * Computes EPS (`LPA`), BVPS (`VPA`), P/E (`P_L`), P/B (`P_VP`), and implied ROE—returning `None` for non-applicable multiples under losses or negative equity.
-  * Implements a **Consistent 2-Stage Dividend Discount Model (DDM)** with strict numeric/domain guards and centralized defaults in `config.py`:
-    * **Stage 1 (Years 1 to $N$):** Projects earnings growth at sustainable rate $g_{\text{sust}} = (1 - \text{payout}) \times \text{ROE}$ and discounts effective shareholder dividends ($\text{Earnings}_t \times \text{payout}$).
-    * **Stage 2 (Terminal Value / Perpetuity):** Assumes competitive equilibrium ($\text{ROE}_{\text{terminal}} = K_e$), applying maturity sustainable payout $\text{payout}_{\text{terminal}} = 1 - \frac{g_{\text{perpetual}}}{K_e}$ in Gordon Growth to avoid artificial value destruction.
-    * **Default Parameters:** Cost of Equity **$K_e = 14.5\%$** (`TAXA_DESCONTO_PADRAO = 0.145`) and Perpetual Growth **$g_{\text{perpetual}} = 4.0\%$** (`CRESCIMENTO_PERPETUO_PADRAO = 0.04`), yielding $\text{payout}_{\text{terminal}} = 72.41\%$.
+  * Uses full-precision `LPA` and `VPA` derived strictly from PDF `numero_total_acoes` and `patrimonio_liquido` to prevent cascading rounding errors across all three valuation methodologies:
+    1. **Consistent 2-Stage DDM (`fluxo_de_caixa_futuro_buffet`):**
+       * **Stage 1 (Years 1 to $N$):** Projects earnings growth at sustainable rate $g_{\text{sust}} = (1 - \text{payout}) \times \text{ROE}$ and discounts effective shareholder dividends ($\text{Earnings}_t \times \text{payout}$).
+       * **Stage 2 (Terminal Value / Perpetuity):** Assumes competitive equilibrium ($\text{ROE}_{\text{terminal}} = K_e$), applying maturity sustainable payout $\text{payout}_{\text{terminal}} = 1 - \frac{g_{\text{perpetual}}}{K_e}$ in Gordon Growth.
+       * **Defaults:** **$K_e = 14.5\%$** (`TAXA_DESCONTO_PADRAO = 0.145`) and **$g_{\text{perpetual}} = 4.0\%$** (`CRESCIMENTO_PERPETUO_PADRAO = 0.04`), yielding $\text{payout}_{\text{terminal}} = 72.41\%$.
+    2. **Décio Bazin Ceiling Price (`calcular_preco_teto_bazin`):**
+       * Computes $\text{Ceiling Price} = \frac{\text{DPA}}{\text{yield\_minimo}}$ with projected gross $\text{DPA} = \text{LPA} \times \text{payout}$ at **two yield tiers**: **6% Classic** (`YIELD_MINIMO_BAZIN_PADRAO = 0.06`) and **8% Brazil-Rate Conservative Floor** (`YIELD_MINIMO_BAZIN_CONSERVADOR = 0.08`, calibrating for high Selic and 15% withholding tax on JCP).
+       * Strict domain guards reject `bool`, `NaN`/`inf`, `dpa <= 0`, `preco_atual <= 0`, and `yield_minimo` outside `(0, 1)`.
+    3. **Benjamin Graham Intrinsic Value (`calcular_valor_intrinseco_graham`):**
+       * Computes $\text{Intrinsic Value} = \sqrt{22.5 \times \text{LPA} \times \text{VPA}}$ (`CONSTANTE_GRAHAM_PADRAO = 22.5`).
+       * **Critical individual sign guards:** validates `lpa <= 0` and `vpa <= 0` **separately before multiplication** so two negative values can never cancel into a positive square root.
+  * **Zero Double-Weighting Triangulation:** Displays all 4 rows (`DDM`, `Bazin 6%`, `Bazin 8%`, `Graham`) while computing `min`, `median`, `max`, and `dispersao_pct` strictly over **one representative per methodology** (`DDM`, `Bazin 6% Classic`, and `Graham`), keeping `Bazin 8%` as an explicit conservative income floor reference.
 
 ---
 
 ## 🧠 Valuation Methodologies
 
-* **Consistent 2-Stage DDM (Implemented):** Projects sustainable earnings retention over a 4-year explicit horizon, discounts distributed dividends at $K_e = 14.5\%$, and applies competitive-convergence terminal value at $g_{\text{perpetual}} = 4.0\%$.
-* *(Roadmap)* **Dividend Yield Ceiling (Décio Bazin Method):** Leverages `buscar_payout_medio_historico_yfinance` (including JCP fallback) to estimate price ceilings targeting a minimum 6% dividend yield.
-* *(Roadmap)* **Benjamin Graham Intrinsic Value Formula.**
+All three classical fundamental methodologies are implemented deterministically in `tools/valuation.py` and triangulated inside `calculadora_node`:
+
+* **Consistent 2-Stage DDM:** Explicitly prices Brazilian cost of equity ($K_e = 14.5\%$) and competitive maturity convergence ($g_{\text{perpetual}} = 4.0\%$).
+* **Décio Bazin (6% Classic & 8% Conservative Brazil-Rate Floor):** Income-oriented ceiling price anchored in projected gross DPA (`LPA × payout_sustentavel`, including JCP fallback).
+* **Benjamin Graham (`22.5` Multiplier):** Classic earnings/book-value geometric mean ($\sqrt{22.5 \times \text{LPA} \times \text{VPA}}$) with independent positive sign guards on both `LPA` and `VPA`.
 
 ---
 

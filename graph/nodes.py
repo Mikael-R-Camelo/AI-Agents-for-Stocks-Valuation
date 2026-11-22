@@ -1,6 +1,7 @@
 import itertools
 import json
 import logging
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -20,12 +21,15 @@ from agents.extrator import (
 from agents.prompts import montar_prompt_sistema_analista
 from agents.sector_protocols import obter_protocolo
 from config import (
+    CONSTANTE_GRAHAM_PADRAO,
     CRESCIMENTO_PERPETUO_PADRAO,
     MAX_TENTATIVAS_COMPLIANCE,
     MAX_TENTATIVAS_EXTRACAO,
     TAXA_DESCONTO_PADRAO,
     TOLERANCIA_CAIXA,
     TOLERANCIA_ROE,
+    YIELD_MINIMO_BAZIN_CONSERVADOR,
+    YIELD_MINIMO_BAZIN_PADRAO,
     cache_pdf_habilitado,
     obter_llm,
     obter_modelo_gemini_fallback,
@@ -37,7 +41,12 @@ from graph.state import (
     ParametrosAvaliacao,
     ProjecaoLucrosAnuais,
     ResultadoQuantitativo,
+    ResumoTriangulacaoCenario,
+    TriangulacaoValuation,
+    ValuationBazin,
+    ValuationBazinCenario,
     ValuationCenario,
+    ValuationGraham,
 )
 from tools.market_data import (
     buscar_dados_mercado_yfinance,
@@ -47,7 +56,11 @@ from tools.market_data import (
     projetar_lucro_anual_cenarios,
 )
 from tools.utils import chave_ordenacao_trimestre
-from tools.valuation import fluxo_de_caixa_futuro_buffet
+from tools.valuation import (
+    calcular_preco_teto_bazin,
+    calcular_valor_intrinseco_graham,
+    fluxo_de_caixa_futuro_buffet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +252,145 @@ def _executar_ddm_seguro(
     )
 
 
+def _executar_bazin_seguro(
+    *,
+    dpa: float | None,
+    preco_atual: float | None,
+    yield_minimo: float,
+) -> tuple[ValuationBazin | None, str | None]:
+    """Executa Décio Bazin isolando erros de domínio (ex.: DPA <= 0 ou cotação indisponível)."""
+    if preco_atual is None or preco_atual <= 0:
+        return None, "Cotação atual indisponível no Yahoo Finance."
+    if dpa is None or dpa <= 0:
+        return None, "DPA projetado positivo indisponível para o método Décio Bazin."
+
+    try:
+        bruto = calcular_preco_teto_bazin.invoke(
+            {
+                "dpa": dpa,
+                "preco_atual": preco_atual,
+                "yield_minimo": yield_minimo,
+            }
+        )
+    except ValueError as exc:
+        return None, str(exc)
+
+    return ValuationBazin.model_validate(bruto), None
+
+
+def _executar_bazin_cenario(
+    *,
+    lpa_exato: float | None,
+    payout: float | None,
+    preco_atual: float | None,
+) -> ValuationBazinCenario:
+    """Calcula Décio Bazin nos dois patamares oficiais (6% clássico e 8% juros Brasil)."""
+    dpa_exato: float | None = None
+    if lpa_exato is not None and payout is not None and payout > 0:
+        dpa_exato = lpa_exato * min(float(payout), 1.0)
+
+    dy_6, erro_6 = _executar_bazin_seguro(
+        dpa=dpa_exato,
+        preco_atual=preco_atual,
+        yield_minimo=YIELD_MINIMO_BAZIN_PADRAO,
+    )
+    dy_8, erro_8 = _executar_bazin_seguro(
+        dpa=dpa_exato,
+        preco_atual=preco_atual,
+        yield_minimo=YIELD_MINIMO_BAZIN_CONSERVADOR,
+    )
+    return ValuationBazinCenario(
+        dy_6=dy_6,
+        dy_8=dy_8,
+        erro_dy_6=erro_6,
+        erro_dy_8=erro_8,
+    )
+
+
+def _executar_graham_seguro(
+    *,
+    lpa_exato: float | None,
+    vpa_exato: float | None,
+    preco_atual: float | None,
+) -> tuple[ValuationGraham | None, str | None]:
+    """Executa Benjamin Graham em precisão total isolando prejuízo ou PL negativo."""
+    if preco_atual is None or preco_atual <= 0:
+        return None, "Cotação atual indisponível no Yahoo Finance."
+    if lpa_exato is None or vpa_exato is None:
+        return None, "LPA ou VPA indisponíveis para a fórmula de Benjamin Graham."
+
+    try:
+        bruto = calcular_valor_intrinseco_graham.invoke(
+            {
+                "lpa": lpa_exato,
+                "vpa": vpa_exato,
+                "preco_atual": preco_atual,
+                "constante_graham": CONSTANTE_GRAHAM_PADRAO,
+            }
+        )
+    except ValueError as exc:
+        return None, str(exc)
+
+    return ValuationGraham.model_validate(bruto), None
+
+
+def _montar_resumo_triangulacao_cenario(
+    *,
+    ddm: ValuationCenario | None,
+    bazin: ValuationBazinCenario,
+    graham: ValuationGraham | None,
+) -> ResumoTriangulacaoCenario:
+    """
+    Consolida triangulação usando estritamente 1 representante por metodologia
+    (DDM, Bazin 6% Clássico e Graham), sem peso duplo para Bazin 8%.
+    """
+    bazin_6 = bazin.dy_6
+    bazin_8 = bazin.dy_8
+
+    # Apenas 1 representante por metodologia entra nas estatísticas (mín/mediana/máx)
+    representantes: list[tuple[str, float]] = []
+    if ddm is not None:
+        representantes.append(("ddm", ddm.preco_justo))
+    if bazin_6 is not None:
+        representantes.append(("bazin_6", bazin_6.preco_justo))
+    if graham is not None:
+        representantes.append(("graham", graham.preco_justo))
+
+    modelos_triangulados = [nome for nome, _ in representantes]
+    precos = [preco for _, preco in representantes]
+
+    minimo = round(min(precos), 2) if precos else None
+    mediana = round(float(statistics.median(precos)), 2) if precos else None
+    maximo = round(max(precos), 2) if precos else None
+    dispersao_pct = (
+        round(((maximo / minimo) - 1.0) * 100, 2)
+        if len(precos) >= 2 and minimo is not None and minimo > 0 and maximo is not None
+        else None
+    )
+
+    return ResumoTriangulacaoCenario(
+        ddm_preco_justo=ddm.preco_justo if ddm else None,
+        ddm_margem_seguranca=ddm.margem_seguranca if ddm else None,
+        ddm_upside_downside=ddm.upside_downside if ddm else None,
+        bazin_6_preco_justo=bazin_6.preco_justo if bazin_6 else None,
+        bazin_6_margem_seguranca=bazin_6.margem_seguranca if bazin_6 else None,
+        bazin_6_upside_downside=bazin_6.upside_downside if bazin_6 else None,
+        bazin_8_preco_justo=bazin_8.preco_justo if bazin_8 else None,
+        bazin_8_margem_seguranca=bazin_8.margem_seguranca if bazin_8 else None,
+        bazin_8_upside_downside=bazin_8.upside_downside if bazin_8 else None,
+        graham_preco_justo=graham.preco_justo if graham else None,
+        graham_margem_seguranca=graham.margem_seguranca if graham else None,
+        graham_upside_downside=graham.upside_downside if graham else None,
+        modelos_triangulados=modelos_triangulados,
+        modelos_validos=len(precos),
+        minimo=minimo,
+        mediana=mediana,
+        maximo=maximo,
+        dispersao_pct=dispersao_pct,
+        piso_bazin_8_juros_brasil=bazin_8.preco_justo if bazin_8 else None,
+    )
+
+
 def _formatar_moeda(valor: float | None, moeda: str = "R$") -> str:
     if valor is None:
         return "N/A"
@@ -259,16 +411,56 @@ def _formatar_numero(valor: float | None, casas: int = 2) -> str:
     return f"{valor:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def _formatar_celula_modelo(
+    preco: float | None,
+    margem: float | None,
+    upside: float | None,
+    erro: str | None,
+) -> str:
+    if preco is None:
+        return f"N/A ({erro})" if erro else "N/A"
+    return (
+        f"{_formatar_moeda(preco)} "
+        f"(MS: {_formatar_pct(margem, sinal=True)} | Upside: {_formatar_pct(upside, sinal=True)})"
+    )
+
+
 def _logar_resumo_quantitativo(resultado: ResultadoQuantitativo) -> None:
-    """Imprime resumo tabular determinístico no log antes de acionar o Analista."""
+    """Imprime resumo tabular determinístico com triangulação dos modelos antes do Analista."""
     vc = resultado.valuation_conservador
     vm = resultado.valuation_mediano
+    bc = resultado.valuation_bazin_conservador
+    bm = resultado.valuation_bazin_mediano
+    gc = resultado.valuation_graham_conservador
+    gm = resultado.valuation_graham_mediano
     mc = resultado.multiplos_conservador
     mm = resultado.multiplos_mediano
+    tri = resultado.triangulacao
     p = resultado.parametros
 
+    b6c = bc.dy_6 if bc else None
+    b8c = bc.dy_8 if bc else None
+    b6m = bm.dy_6 if bm else None
+    b8m = bm.dy_8 if bm else None
+
+    def _resumo_curto(
+        preco: float | None, margem: float | None, upside: float | None
+    ) -> str:
+        if preco is None:
+            return "N/A"
+        return f"{_formatar_moeda(preco)} ({_formatar_pct(upside, sinal=True)} / MS {_formatar_pct(margem, sinal=True)})"
+
+    eh_forward = resultado.projecao_lucros.trimestres_projetados > 0
+    rotulo_lucro = "Lucro Anual Proj." if eh_forward else "Lucro Anual (4T)"
+    rotulo_lpa_vpa = (
+        "LPA (Fwd) / VPA (Atual)" if eh_forward else "LPA (4T) / VPA (Atual)"
+    )
+    rotulo_pl_pvp = (
+        "P/L (Fwd) / P/VP (Atual)" if eh_forward else "P/L (4T) / P/VP (Atual)"
+    )
+
     linhas = [
-        f"[Calculadora] Resumo Quantitativo ({resultado.ticker} | Setor: {resultado.setor})",
+        f"[Calculadora] Triangulação Quantitativa ({resultado.ticker} | Setor: {resultado.setor})",
         (
             f"  Cotação Atual : {_formatar_moeda(resultado.preco_atual)} ({resultado.moeda}) | "
             f"Momento: {p.momento_operacional} | Ke={p.taxa_desconto:.1%} | g={p.crescimento_perpetuo:.1%}"
@@ -277,18 +469,22 @@ def _logar_resumo_quantitativo(resultado: ResultadoQuantitativo) -> None:
             f"  Base PDF ({p.trimestre_mais_recente}): Ações={p.num_acoes_pdf:,.0f} | "
             f"PL={_formatar_moeda(p.patrimonio_liquido_pdf)} | Fonte Payout: {p.fonte_payout}"
         ),
-        "  ------------------------------------------------------------------------",
-        f"  {'Métrica':<24} | {'Conservador':>20} | {'Mediano':>20}",
-        "  ------------------------------------------------------------------------",
-        f"  {'Lucro Anual Proj.':<24} | {_formatar_moeda(resultado.projecao_lucros.lucro_anual_conservador):>20} | {_formatar_moeda(resultado.projecao_lucros.lucro_anual_mediano):>20}",
-        f"  {'Preço Justo / Teto':<24} | {_formatar_moeda(vc.preco_justo if vc else None):>20} | {_formatar_moeda(vm.preco_justo if vm else None):>20}",
-        f"  {'Margem de Segurança':<24} | {_formatar_pct(vc.margem_seguranca if vc else None, sinal=True):>20} | {_formatar_pct(vm.margem_seguranca if vm else None, sinal=True):>20}",
-        f"  {'Upside / Downside':<24} | {_formatar_pct(vc.upside_downside if vc else None, sinal=True):>20} | {_formatar_pct(vm.upside_downside if vm else None, sinal=True):>20}",
-        f"  {'LPA':<24} | {_formatar_moeda(mc.LPA if mc else None):>20} | {_formatar_moeda(mm.LPA if mm else None):>20}",
-        f"  {'VPA':<24} | {_formatar_moeda(mc.VPA if mc else None):>20} | {_formatar_moeda(mm.VPA if mm else None):>20}",
-        f"  {'P/L':<24} | {_formatar_numero(mc.P_L if mc else None):>20} | {_formatar_numero(mm.P_L if mm else None):>20}",
-        f"  {'P/VP':<24} | {_formatar_numero(mc.P_VP if mc else None):>20} | {_formatar_numero(mm.P_VP if mm else None):>20}",
-        "  ------------------------------------------------------------------------",
+        "  --------------------------------------------------------------------------------------------",
+        f"  {'Métrica / Modelo':<26} | {'Conservador':>30} | {'Mediano':>30}",
+        "  --------------------------------------------------------------------------------------------",
+        f"  {rotulo_lucro:<26} | {_formatar_moeda(resultado.projecao_lucros.lucro_anual_conservador):>30} | {_formatar_moeda(resultado.projecao_lucros.lucro_anual_mediano):>30}",
+        f"  {'DDM 2 Estágios (Ke 14,5%)':<26} | {_resumo_curto(vc.preco_justo if vc else None, vc.margem_seguranca if vc else None, vc.upside_downside if vc else None):>30} | {_resumo_curto(vm.preco_justo if vm else None, vm.margem_seguranca if vm else None, vm.upside_downside if vm else None):>30}",
+        f"  {'Décio Bazin (DY 6% Cláss.)':<26} | {_resumo_curto(b6c.preco_justo if b6c else None, b6c.margem_seguranca if b6c else None, b6c.upside_downside if b6c else None):>30} | {_resumo_curto(b6m.preco_justo if b6m else None, b6m.margem_seguranca if b6m else None, b6m.upside_downside if b6m else None):>30}",
+        f"  {'Décio Bazin (DY 8% Juros)':<26} | {_resumo_curto(b8c.preco_justo if b8c else None, b8c.margem_seguranca if b8c else None, b8c.upside_downside if b8c else None):>30} | {_resumo_curto(b8m.preco_justo if b8m else None, b8m.margem_seguranca if b8m else None, b8m.upside_downside if b8m else None):>30}",
+        f"  {'Benjamin Graham (22,5)':<26} | {_resumo_curto(gc.preco_justo if gc else None, gc.margem_seguranca if gc else None, gc.upside_downside if gc else None):>30} | {_resumo_curto(gm.preco_justo if gm else None, gm.margem_seguranca if gm else None, gm.upside_downside if gm else None):>30}",
+        "  --------------------------------------------------------------------------------------------",
+        f"  {'Triangulação — Mediana':<26} | {_formatar_moeda(tri.conservador.mediana if tri else None):>30} | {_formatar_moeda(tri.mediano.mediana if tri else None):>30}",
+        f"  {'Triangulação — Mín / Máx':<26} | {(_formatar_moeda(tri.conservador.minimo) + ' / ' + _formatar_moeda(tri.conservador.maximo)) if tri and tri.conservador.minimo is not None else 'N/A':>30} | {(_formatar_moeda(tri.mediano.minimo) + ' / ' + _formatar_moeda(tri.mediano.maximo)) if tri and tri.mediano.minimo is not None else 'N/A':>30}",
+        f"  {'Dispersão (DDM/Baz6/Gra)':<26} | {_formatar_pct(tri.conservador.dispersao_pct if tri else None):>30} | {_formatar_pct(tri.mediano.dispersao_pct if tri else None):>30}",
+        "  --------------------------------------------------------------------------------------------",
+        f"  {rotulo_lpa_vpa:<26} | {(_formatar_moeda(mc.LPA) + ' / ' + _formatar_moeda(mc.VPA)) if mc else 'N/A':>30} | {(_formatar_moeda(mm.LPA) + ' / ' + _formatar_moeda(mm.VPA)) if mm else 'N/A':>30}",
+        f"  {rotulo_pl_pvp:<26} | {(_formatar_numero(mc.P_L) + 'x / ' + _formatar_numero(mc.P_VP) + 'x') if mc else 'N/A':>30} | {(_formatar_numero(mm.P_L) + 'x / ' + _formatar_numero(mm.P_VP) + 'x') if mm else 'N/A':>30}",
+        "  --------------------------------------------------------------------------------------------",
     ]
     logger.info("\n%s", "\n".join(linhas))
 
@@ -335,7 +531,13 @@ def _eh_erro_transitorio_llm(exc: Exception) -> bool:
     nome_classe = type(exc).__name__.lower()
     if any(
         termo in nome_classe
-        for termo in ("servererror", "serviceunavailable", "timeout", "httperror", "ratelimit")
+        for termo in (
+            "servererror",
+            "serviceunavailable",
+            "timeout",
+            "httperror",
+            "ratelimit",
+        )
     ):
         return True
 
@@ -350,14 +552,24 @@ def gerar_relatorio_fallback_quantitativo(
     erro_analista: str,
     erros_validacao: dict[str, list[str]] | None = None,
 ) -> str:
-    """Gera relatório Markdown completo e em compliance quando o LLM está indisponível."""
+    """Gera relatório Markdown completo com triangulação e em compliance quando o LLM está indisponível."""
     resultado = ResultadoQuantitativo.model_validate(resultado_quantitativo)
     vc = resultado.valuation_conservador
     vm = resultado.valuation_mediano
+    bc = resultado.valuation_bazin_conservador
+    bm = resultado.valuation_bazin_mediano
+    gc = resultado.valuation_graham_conservador
+    gm = resultado.valuation_graham_mediano
     mc = resultado.multiplos_conservador
     mm = resultado.multiplos_mediano
+    tri = resultado.triangulacao
     p = resultado.parametros
     proj = resultado.projecao_lucros
+
+    b6c = bc.dy_6 if bc else None
+    b8c = bc.dy_8 if bc else None
+    b6m = bm.dy_6 if bm else None
+    b8m = bm.dy_8 if bm else None
 
     historico_ordenado = sorted(
         dados_extraidos.values(),
@@ -372,47 +584,118 @@ def gerar_relatorio_fallback_quantitativo(
             "foram gerados integralmente pelo motor determinístico em Python."
         ),
         "",
-        f"### Tabela Comparativa de Valuation e Múltiplos ({resultado.ticker})",
+        f"### Triangulação de Valuation ({resultado.ticker})",
         "",
-        "| Métrica | Cenário Conservador | Cenário Mediano | Referência Atual |",
+        "| Metodologia | Cenário Conservador | Cenário Mediano | Referência Atual |",
         "| :--- | :---: | :---: | :---: |",
-        f"| **Lucro Líquido Projetado (R$)** | {_formatar_moeda(proj.lucro_anual_conservador)} | {_formatar_moeda(proj.lucro_anual_mediano)} | {_formatar_moeda(proj.soma_acumulada_ano)} *({proj.trimestres_realizados}T acum.)* |",
-        f"| **Preço Justo / Teto (R$)** | {_formatar_moeda(vc.preco_justo if vc else None)} | {_formatar_moeda(vm.preco_justo if vm else None)} | {_formatar_moeda(resultado.preco_atual)} |",
-        f"| **Margem de Segurança (%)** | {_formatar_pct(vc.margem_seguranca if vc else None, sinal=True)} | {_formatar_pct(vm.margem_seguranca if vm else None, sinal=True)} | — |",
-        f"| **Upside / Downside (%)** | {_formatar_pct(vc.upside_downside if vc else None, sinal=True)} | {_formatar_pct(vm.upside_downside if vm else None, sinal=True)} | — |",
-        f"| **LPA (R$)** | {_formatar_moeda(mc.LPA if mc else None)} | {_formatar_moeda(mm.LPA if mm else None)} | — |",
-        f"| **VPA (R$)** | {_formatar_moeda(mc.VPA if mc else None)} | {_formatar_moeda(mm.VPA if mm else None)} | {_formatar_moeda(mm.VPA if mm else None)} |",
-        f"| **P/L** | {_formatar_numero(mc.P_L if mc else None)} | {_formatar_numero(mm.P_L if mm else None)} | — |",
-        f"| **P/VP** | {_formatar_numero(mc.P_VP if mc else None)} | {_formatar_numero(mm.P_VP if mm else None)} | {_formatar_numero(mm.P_VP if mm else None)} |",
-        f"| **ROE Calculado (%)** | {_formatar_pct(mc.ROE_calculado * 100 if mc and mc.ROE_calculado is not None else None)} | {_formatar_pct(mm.ROE_calculado * 100 if mm and mm.ROE_calculado is not None else None)} | {_formatar_pct(p.roe_pdf_recente * 100)} *({p.trimestre_mais_recente})* |",
-        f"| **Crescimento Estágio 1 (%)** | {_formatar_pct(vc.crescimento_estagio_1 if vc else None)} | {_formatar_pct(vm.crescimento_estagio_1 if vm else None)} | — |",
-        f"| **Payout Terminal Sustentável (%)** | {_formatar_pct(vc.payout_terminal if vc else None)} | {_formatar_pct(vm.payout_terminal if vm else None)} | — |",
-        "",
-        "---",
-        "",
-        "### Parâmetros Utilizados na Avaliação",
-        "",
-        f"- **Cotação Atual:** {_formatar_moeda(resultado.preco_atual)} ({resultado.moeda})",
-        f"- **Setor / Protocolo:** `{resultado.setor}`",
-        f"- **Momento Operacional (classificação determinística):** `{p.momento_operacional}`",
-        f"- **Base Acionária (PDF {p.trimestre_mais_recente}):** {_formatar_numero(p.num_acoes_pdf, 0)} ações",
-        f"- **Patrimônio Líquido (PDF {p.trimestre_mais_recente}):** {_formatar_moeda(p.patrimonio_liquido_pdf)}",
-        f"- **Taxa de Desconto ($K_e$):** {_formatar_pct(p.taxa_desconto * 100)}",
-        f"- **Crescimento Perpétuo ($g$):** {_formatar_pct(p.crescimento_perpetuo * 100)}",
-        f"- **ROE Conservador / Mediano:** {_formatar_pct(p.roe_usado_conservador * 100)} / {_formatar_pct(p.roe_usado_mediano * 100)}",
-        f"- **Payout Conservador / Mediano:** {_formatar_pct(p.payout_usado_conservador * 100 if p.payout_usado_conservador is not None else None)} / {_formatar_pct(p.payout_usado_mediano * 100 if p.payout_usado_mediano is not None else None)} *(fonte histórica: `{p.fonte_payout}`)*",
+        (
+            f"| **DDM de 2 Estágios ($K_e$ {_formatar_pct(p.taxa_desconto * 100)}, $g$ {_formatar_pct(p.crescimento_perpetuo * 100)})** "
+            f"| {_formatar_celula_modelo(vc.preco_justo if vc else None, vc.margem_seguranca if vc else None, vc.upside_downside if vc else None, resultado.erro_valuation_conservador)} "
+            f"| {_formatar_celula_modelo(vm.preco_justo if vm else None, vm.margem_seguranca if vm else None, vm.upside_downside if vm else None, resultado.erro_valuation_mediano)} "
+            f"| {_formatar_moeda(resultado.preco_atual)} |"
+        ),
+        (
+            f"| **Décio Bazin Clássico (DY {_formatar_pct(p.yield_minimo_bazin_padrao * 100)})** "
+            f"| {_formatar_celula_modelo(b6c.preco_justo if b6c else None, b6c.margem_seguranca if b6c else None, b6c.upside_downside if b6c else None, bc.erro_dy_6 if bc else None)} "
+            f"| {_formatar_celula_modelo(b6m.preco_justo if b6m else None, b6m.margem_seguranca if b6m else None, b6m.upside_downside if b6m else None, bm.erro_dy_6 if bm else None)} "
+            f"| — |"
+        ),
+        (
+            f"| **Décio Bazin Conservador / Juros BR (DY {_formatar_pct(p.yield_minimo_bazin_conservador * 100)})*** "
+            f"| {_formatar_celula_modelo(b8c.preco_justo if b8c else None, b8c.margem_seguranca if b8c else None, b8c.upside_downside if b8c else None, bc.erro_dy_8 if bc else None)} "
+            f"| {_formatar_celula_modelo(b8m.preco_justo if b8m else None, b8m.margem_seguranca if b8m else None, b8m.upside_downside if b8m else None, bm.erro_dy_8 if bm else None)} "
+            f"| *Piso de renda* |"
+        ),
+        (
+            f"| **Benjamin Graham (Constante {_formatar_numero(p.constante_graham, 1)})** "
+            f"| {_formatar_celula_modelo(gc.preco_justo if gc else None, gc.margem_seguranca if gc else None, gc.upside_downside if gc else None, resultado.erro_valuation_graham_conservador)} "
+            f"| {_formatar_celula_modelo(gm.preco_justo if gm else None, gm.margem_seguranca if gm else None, gm.upside_downside if gm else None, resultado.erro_valuation_graham_mediano)} "
+            f"| — |"
+        ),
     ]
+
+    if tri is not None:
+        linhas.extend(
+            [
+                f"| **Mediana da Triangulação (DDM, Bazin 6%, Graham)** | **{_formatar_moeda(tri.conservador.mediana)}** | **{_formatar_moeda(tri.mediano.mediana)}** | {_formatar_moeda(resultado.preco_atual)} |",
+                f"| **Faixa (Mínimo – Máximo) / Dispersão** | {_formatar_moeda(tri.conservador.minimo)} – {_formatar_moeda(tri.conservador.maximo)} ({_formatar_pct(tri.conservador.dispersao_pct)}) | {_formatar_moeda(tri.mediano.minimo)} – {_formatar_moeda(tri.mediano.maximo)} ({_formatar_pct(tri.mediano.dispersao_pct)}) | — |",
+            ]
+        )
+
+    eh_forward = proj.trimestres_projetados > 0
+    rotulo_lucro = (
+        "Lucro Líquido Projetado (R$)" if eh_forward else "Lucro Líquido Anual (R$)"
+    )
+    ref_lucro = (
+        f"{_formatar_moeda(proj.soma_acumulada_ano)} *({proj.trimestres_realizados}T acum.)*"
+        if eh_forward
+        else f"{_formatar_moeda(proj.soma_acumulada_ano)} *(4T realizados)*"
+    )
+    rotulo_lpa = "LPA Projetado — Forward (R$)" if eh_forward else "LPA Anual (R$)"
+    ref_lpa = (
+        "— *(projeção anual)*"
+        if eh_forward
+        else f"{_formatar_moeda(mm.LPA if mm else None)} *(4T realizados)*"
+    )
+    rotulo_pl = "P/L Projetado — Forward" if eh_forward else "P/L Anual"
+    ref_pl = (
+        "— *(projeção anual)*"
+        if eh_forward
+        else f"{_formatar_numero(mm.P_L if mm else None)} *(4T realizados)*"
+    )
+    rotulo_roe = (
+        "ROE Calculado — Forward (%)" if eh_forward else "ROE Calculado — Anual (%)"
+    )
+
+    linhas.extend(
+        [
+            "",
+            (
+                "> *Nota metodológica:* As estatísticas de triangulação utilizam estritamente **um representante por metodologia** "
+                "(DDM de 2 Estágios, Bazin 6% Clássico e Benjamin Graham) para evitar peso duplo ao método Bazin. "
+                "O **Bazin 8%** atua como piso conservador de renda em ambiente de Selic elevada e compensação aproximada "
+                "ao fato de o DPA projetado ser bruto (antes de eventual IR de 15% sobre JCP). A constante 22,5 de Graham "
+                "tende a ser mais otimista em setores intensivos em patrimônio sob juros brasileiros elevados."
+            ),
+            "",
+            f"### Tabela Comparativa de Lucros e Múltiplos ({resultado.ticker})",
+            "",
+            "| Métrica | Cenário Conservador | Cenário Mediano | Referência Atual |",
+            "| :--- | :---: | :---: | :---: |",
+            f"| **{rotulo_lucro}** | {_formatar_moeda(proj.lucro_anual_conservador)} | {_formatar_moeda(proj.lucro_anual_mediano)} | {ref_lucro} |",
+            f"| **{rotulo_lpa}** | {_formatar_moeda(mc.LPA if mc else None)} | {_formatar_moeda(mm.LPA if mm else None)} | {ref_lpa} |",
+            f"| **VPA Atual (R$)** | {_formatar_moeda(mc.VPA if mc else None)} | {_formatar_moeda(mm.VPA if mm else None)} | {_formatar_moeda(mm.VPA if mm else None)} *({p.trimestre_mais_recente})* |",
+            f"| **{rotulo_pl}** | {_formatar_numero(mc.P_L if mc else None)} | {_formatar_numero(mm.P_L if mm else None)} | {ref_pl} |",
+            f"| **P/VP Atual** | {_formatar_numero(mc.P_VP if mc else None)} | {_formatar_numero(mm.P_VP if mm else None)} | {_formatar_numero(mm.P_VP if mm else None)} *({p.trimestre_mais_recente})* |",
+            f"| **{rotulo_roe}** | {_formatar_pct(mc.ROE_calculado * 100 if mc and mc.ROE_calculado is not None else None)} | {_formatar_pct(mm.ROE_calculado * 100 if mm and mm.ROE_calculado is not None else None)} | {_formatar_pct(p.roe_pdf_recente * 100)} *({p.trimestre_mais_recente})* |",
+            f"| **Crescimento Estágio 1 — DDM (%)** | {_formatar_pct(vc.crescimento_estagio_1 if vc else None)} | {_formatar_pct(vm.crescimento_estagio_1 if vm else None)} | — |",
+            f"| **Payout Terminal Sustentável — DDM (%)** | {_formatar_pct(vc.payout_terminal if vc else None)} | {_formatar_pct(vm.payout_terminal if vm else None)} | — |",
+            "",
+            "---",
+            "",
+            "### Parâmetros Utilizados na Avaliação",
+            "",
+            f"- **Cotação Atual:** {_formatar_moeda(resultado.preco_atual)} ({resultado.moeda})",
+            f"- **Setor / Protocolo:** `{resultado.setor}`",
+            f"- **Momento Operacional (classificação determinística):** `{p.momento_operacional}`",
+            f"- **Base Acionária (PDF {p.trimestre_mais_recente}):** {_formatar_numero(p.num_acoes_pdf, 0)} ações",
+            f"- **Patrimônio Líquido (PDF {p.trimestre_mais_recente}):** {_formatar_moeda(p.patrimonio_liquido_pdf)}",
+            f"- **Taxa de Desconto ($K_e$) / Crescimento Perpétuo ($g$):** {_formatar_pct(p.taxa_desconto * 100)} / {_formatar_pct(p.crescimento_perpetuo * 100)}",
+            f"- **Bazin DY Mínimo (Clássico / Juros BR):** {_formatar_pct(p.yield_minimo_bazin_padrao * 100)} / {_formatar_pct(p.yield_minimo_bazin_conservador * 100)}",
+            f"- **Constante de Graham:** {_formatar_numero(p.constante_graham, 1)}",
+            f"- **ROE Conservador / Mediano:** {_formatar_pct(p.roe_usado_conservador * 100)} / {_formatar_pct(p.roe_usado_mediano * 100)}",
+            f"- **Payout Conservador / Mediano:** {_formatar_pct(p.payout_usado_conservador * 100 if p.payout_usado_conservador is not None else None)} / {_formatar_pct(p.payout_usado_mediano * 100 if p.payout_usado_mediano is not None else None)} *(fonte histórica: `{p.fonte_payout}`)*",
+        ]
+    )
 
     if resultado.erro_dados_mercado:
         linhas.append(f"- **Alerta de Mercado:** {resultado.erro_dados_mercado}")
     if resultado.erro_valuation_conservador:
         linhas.append(
-            f"- **Alerta Valuation Conservador:** {resultado.erro_valuation_conservador}"
+            f"- **Alerta DDM Conservador:** {resultado.erro_valuation_conservador}"
         )
     if resultado.erro_valuation_mediano:
-        linhas.append(
-            f"- **Alerta Valuation Mediano:** {resultado.erro_valuation_mediano}"
-        )
+        linhas.append(f"- **Alerta DDM Mediano:** {resultado.erro_valuation_mediano}")
     for aviso in resultado.avisos:
         linhas.append(f"- **Aviso:** {aviso}")
 
@@ -423,10 +706,10 @@ def gerar_relatorio_fallback_quantitativo(
 
     if historico_ordenado:
         linhas.extend(["", "---", "", "### Contexto Qualitativo Extraído dos PDFs", ""])
-        for tri in historico_ordenado:
-            ref = tri.get("trimestre_referencia", "N/A")
-            resumo = tri.get("resumo_momento_operacional", "")
-            visao = tri.get("visao_da_gestao", "")
+        for tri_pdf in historico_ordenado:
+            ref = tri_pdf.get("trimestre_referencia", "N/A")
+            resumo = tri_pdf.get("resumo_momento_operacional", "")
+            visao = tri_pdf.get("visao_da_gestao", "")
             linhas.append(f"- **{ref} — Momento Operacional:** {resumo}")
             linhas.append(f"  - **Visão da Gestão:** {visao}")
 
@@ -620,8 +903,9 @@ def roteador_validador(state: AgentState) -> str:
 
 def calculadora_node(state: AgentState) -> dict[str, Any]:
     """
-    Executa toda a cadeia financeira determinística (zero tokens LLM),
-    registra resumo no terminal, persiste JSON quantitativo e prepara a entrada do Analista.
+    Executa toda a cadeia financeira determinística (zero tokens LLM) com triangulação
+    DDM de 2 Estágios + Décio Bazin (6% e 8%) + Benjamin Graham, registra resumo no
+    terminal, persiste JSON quantitativo e prepara a entrada do Analista.
     """
     dados_extraidos = state.get("dados_extraidos") or {}
     ticker = state.get("ticker", "Desconhecido")
@@ -650,6 +934,7 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
     # 1. Cotação atual (sem sharesOutstanding / VPA do Yahoo Finance)
     dados_mercado = buscar_dados_mercado_yfinance.invoke({"ticker": ticker})
     preco_atual = dados_mercado.get("preco_atual")
+    preco_float = float(preco_atual) if preco_atual is not None else None
     moeda = str(dados_mercado.get("moeda") or "BRL")
     erro_dados_mercado = dados_mercado.get("erro")
 
@@ -661,11 +946,15 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
             f"ROE histórico indisponível no Yahoo Finance ({dados_roe_hist.get('erro', 'sem dados')}); "
             f"Cenário Conservador utilizou roe_reportado do {trimestre_recente}."
         )
-    roe_usado_conservador = float(roe_historico) if roe_historico is not None else roe_pdf
+    roe_usado_conservador = (
+        float(roe_historico) if roe_historico is not None else roe_pdf
+    )
     roe_usado_mediano = roe_pdf
 
     # 3. Payout médio histórico (com fallback JCP e teto sustentável 1.0)
-    dados_payout_hist = buscar_payout_medio_historico_yfinance.invoke({"ticker": ticker})
+    dados_payout_hist = buscar_payout_medio_historico_yfinance.invoke(
+        {"ticker": ticker}
+    )
     payout_obs = dados_payout_hist.get("payout_medio_observado")
     payout_sust = dados_payout_hist.get("payout_sustentavel")
     fonte_payout = str(dados_payout_hist.get("fonte_payout") or "indisponivel")
@@ -684,9 +973,7 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
         )
 
     payout_usado_mediano = (
-        payout_pdf_seguro
-        if payout_pdf_seguro is not None
-        else payout_usado_conservador
+        payout_pdf_seguro if payout_pdf_seguro is not None else payout_usado_conservador
     )
 
     # 4. Projeção anual de lucros (Conservador e Mediano)
@@ -701,11 +988,11 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
     # 5. Múltiplos básicos (estritamente com PL e ações do PDF)
     multiplos_cons: MultiplosCenario | None = None
     multiplos_med: MultiplosCenario | None = None
-    if preco_atual is not None and preco_atual > 0 and num_acoes_pdf > 0:
+    if preco_float is not None and preco_float > 0 and num_acoes_pdf > 0:
         multiplos_cons = MultiplosCenario.model_validate(
             calcular_multiplos_basicos.invoke(
                 {
-                    "preco_atual": float(preco_atual),
+                    "preco_atual": preco_float,
                     "lucro_anual": projecao.lucro_anual_conservador,
                     "patrimonio_liquido": pl_pdf,
                     "num_acoes": num_acoes_pdf,
@@ -715,7 +1002,7 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
         multiplos_med = MultiplosCenario.model_validate(
             calcular_multiplos_basicos.invoke(
                 {
-                    "preco_atual": float(preco_atual),
+                    "preco_atual": preco_float,
                     "lucro_anual": projecao.lucro_anual_mediano,
                     "patrimonio_liquido": pl_pdf,
                     "num_acoes": num_acoes_pdf,
@@ -723,26 +1010,73 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
             )
         )
 
-    # 6. Valuation DDM de 2 Estágios (Conservador e Mediano)
+    # LPA e VPA em precisão total float para evitar erro de arredondamento em cascata
+    lpa_cons_exato = (
+        projecao.lucro_anual_conservador / num_acoes_pdf if num_acoes_pdf > 0 else None
+    )
+    lpa_med_exato = (
+        projecao.lucro_anual_mediano / num_acoes_pdf if num_acoes_pdf > 0 else None
+    )
+    vpa_exato = pl_pdf / num_acoes_pdf if num_acoes_pdf > 0 else None
+
+    # 6. Valuation 1 — DDM de 2 Estágios (Conservador e Mediano)
     val_cons, erro_val_cons = _executar_ddm_seguro(
         lucro_base=projecao.lucro_anual_conservador,
         payout=payout_usado_conservador,
         roe=roe_usado_conservador,
         num_acoes=num_acoes_pdf,
-        preco_atual=float(preco_atual) if preco_atual is not None else None,
+        preco_atual=preco_float,
     )
     val_med, erro_val_med = _executar_ddm_seguro(
         lucro_base=projecao.lucro_anual_mediano,
         payout=payout_usado_mediano,
         roe=roe_usado_mediano,
         num_acoes=num_acoes_pdf,
-        preco_atual=float(preco_atual) if preco_atual is not None else None,
+        preco_atual=preco_float,
+    )
+
+    # 7. Valuation 2 — Décio Bazin em dois patamares (6% clássico e 8% juros BR)
+    bazin_cons = _executar_bazin_cenario(
+        lpa_exato=lpa_cons_exato,
+        payout=payout_usado_conservador,
+        preco_atual=preco_float,
+    )
+    bazin_med = _executar_bazin_cenario(
+        lpa_exato=lpa_med_exato,
+        payout=payout_usado_mediano,
+        preco_atual=preco_float,
+    )
+
+    # 8. Valuation 3 — Benjamin Graham (22,5)
+    graham_cons, erro_graham_cons = _executar_graham_seguro(
+        lpa_exato=lpa_cons_exato,
+        vpa_exato=vpa_exato,
+        preco_atual=preco_float,
+    )
+    graham_med, erro_graham_med = _executar_graham_seguro(
+        lpa_exato=lpa_med_exato,
+        vpa_exato=vpa_exato,
+        preco_atual=preco_float,
+    )
+
+    # 9. Triangulação consolidada (1 representante por metodologia: DDM, Bazin 6%, Graham)
+    triangulacao = TriangulacaoValuation(
+        conservador=_montar_resumo_triangulacao_cenario(
+            ddm=val_cons,
+            bazin=bazin_cons,
+            graham=graham_cons,
+        ),
+        mediano=_montar_resumo_triangulacao_cenario(
+            ddm=val_med,
+            bazin=bazin_med,
+            graham=graham_med,
+        ),
     )
 
     resultado = ResultadoQuantitativo(
         ticker=ticker,
         setor=setor,
-        preco_atual=float(preco_atual) if preco_atual is not None else None,
+        preco_atual=preco_float,
         moeda=moeda,
         erro_dados_mercado=erro_dados_mercado,
         parametros=ParametrosAvaliacao(
@@ -766,6 +1100,9 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
             trimestre_mais_recente=trimestre_recente,
             taxa_desconto=TAXA_DESCONTO_PADRAO,
             crescimento_perpetuo=CRESCIMENTO_PERPETUO_PADRAO,
+            yield_minimo_bazin_padrao=YIELD_MINIMO_BAZIN_PADRAO,
+            yield_minimo_bazin_conservador=YIELD_MINIMO_BAZIN_CONSERVADOR,
+            constante_graham=CONSTANTE_GRAHAM_PADRAO,
         ),
         projecao_lucros=projecao,
         multiplos_conservador=multiplos_cons,
@@ -774,6 +1111,13 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
         valuation_mediano=val_med,
         erro_valuation_conservador=erro_val_cons,
         erro_valuation_mediano=erro_val_med,
+        valuation_bazin_conservador=bazin_cons,
+        valuation_bazin_mediano=bazin_med,
+        valuation_graham_conservador=graham_cons,
+        valuation_graham_mediano=graham_med,
+        erro_valuation_graham_conservador=erro_graham_cons,
+        erro_valuation_graham_mediano=erro_graham_med,
+        triangulacao=triangulacao,
         avisos=avisos,
     )
 
@@ -812,7 +1156,7 @@ def calculadora_node(state: AgentState) -> dict[str, Any]:
             f"{json.dumps(contexto_qualitativo, indent=2, ensure_ascii=False)}"
             f"{bloco_ressalva}\n\n"
             "Redija o relatório técnico final em Markdown reproduzindo fielmente todos os números "
-            "do resultado quantitativo e integrando as perspectivas qualitativas da gestão."
+            "da triangulação (DDM, Bazin 6%, Bazin 8% e Graham) e integrando as perspectivas qualitativas da gestão."
         )
     )
 

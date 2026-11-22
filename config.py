@@ -15,6 +15,11 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 TAXA_DESCONTO_PADRAO = 0.145
 CRESCIMENTO_PERPETUO_PADRAO = 0.04
 
+# Parâmetros oficiais de Triangulação (Décio Bazin e Benjamin Graham)
+YIELD_MINIMO_BAZIN_PADRAO = 0.06
+YIELD_MINIMO_BAZIN_CONSERVADOR = 0.08
+CONSTANTE_GRAHAM_PADRAO = 22.5
+
 # Limites dos loops de reflexão (Extração e Compliance)
 MAX_TENTATIVAS_EXTRACAO = 3
 MAX_TENTATIVAS_COMPLIANCE = 2

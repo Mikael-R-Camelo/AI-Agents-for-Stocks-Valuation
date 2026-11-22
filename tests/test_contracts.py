@@ -13,9 +13,12 @@ from agents.extrator import DadosTrimestraisPDF
 from agents.prompts import montar_prompt_extrator, montar_prompt_sistema_analista
 from agents.sector_protocols import PROTOCOLOS_SETOR, obter_protocolo
 from config import (
+    CONSTANTE_GRAHAM_PADRAO,
     CRESCIMENTO_PERPETUO_PADRAO,
     DEFAULT_GEMINI_MODEL,
     TAXA_DESCONTO_PADRAO,
+    YIELD_MINIMO_BAZIN_CONSERVADOR,
+    YIELD_MINIMO_BAZIN_PADRAO,
     obter_modelo_gemini,
     obter_modelo_gemini_fallback,
 )
@@ -97,8 +100,18 @@ def test_interpolacao_dinamica_prompts() -> None:
     prompt_analista = montar_prompt_sistema_analista(obter_protocolo("banco"))
     assert f"taxa_desconto={TAXA_DESCONTO_PADRAO}" in prompt_analista
     assert f"crescimento_perpetuo={CRESCIMENTO_PERPETUO_PADRAO}" in prompt_analista
+    assert f"yield_minimo={YIELD_MINIMO_BAZIN_PADRAO}" in prompt_analista
+    assert f"yield_minimo={YIELD_MINIMO_BAZIN_CONSERVADOR}" in prompt_analista
+    assert f"constante_graham={CONSTANTE_GRAHAM_PADRAO}" in prompt_analista
     assert "NÃO deve chamar ferramentas" in prompt_analista
     assert "resultado_quantitativo" in prompt_analista
+    assert "Triangulação de Valuation" in prompt_analista
+    assert "sem peso duplo" in prompt_analista
+    assert "IR de 15% sobre JCP" in prompt_analista
+    assert "LPA Projetado (Forward)" in prompt_analista
+    assert "P/L Projetado (Forward)" in prompt_analista
+    assert "VPA Atual" in prompt_analista
+    assert "P/VP Atual" in prompt_analista
     assert "payout_sustentavel" in prompt_analista
     assert "numero_total_acoes" in prompt_analista
     assert "JCP" in prompt_analista

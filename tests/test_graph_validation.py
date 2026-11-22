@@ -1,4 +1,6 @@
 import json
+import math
+import statistics
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -198,12 +200,79 @@ class TestCalculadoraDeterministica:
         assert quant.valuation_conservador.preco_justo > 16.5
         assert quant.valuation_mediano.preco_justo > quant.valuation_conservador.preco_justo
 
+        # Valida novos parâmetros e modelos Bazin (6% e 8%) + Graham (22.5)
+        assert quant.parametros.yield_minimo_bazin_padrao == 0.06
+        assert quant.parametros.yield_minimo_bazin_conservador == 0.08
+        assert quant.parametros.constante_graham == 22.5
+
+        assert quant.valuation_bazin_conservador is not None
+        assert quant.valuation_bazin_conservador.dy_6 is not None
+        assert quant.valuation_bazin_conservador.dy_8 is not None
+        assert (
+            quant.valuation_bazin_conservador.dy_8.preco_justo
+            < quant.valuation_bazin_conservador.dy_6.preco_justo
+        )
+
+        assert quant.valuation_bazin_mediano is not None
+        assert quant.valuation_bazin_mediano.dy_6 is not None
+        assert quant.valuation_bazin_mediano.dy_8 is not None
+        assert (
+            quant.valuation_bazin_mediano.dy_8.preco_justo
+            < quant.valuation_bazin_mediano.dy_6.preco_justo
+        )
+
+        assert quant.valuation_graham_conservador is not None
+        assert quant.valuation_graham_mediano is not None
+        lpa_med_exato = (
+            quant.projecao_lucros.lucro_anual_mediano / quant.parametros.num_acoes_pdf
+        )
+        vpa_exato = (
+            quant.parametros.patrimonio_liquido_pdf / quant.parametros.num_acoes_pdf
+        )
+        graham_med_esperado = round(math.sqrt(22.5 * lpa_med_exato * vpa_exato), 2)
+        assert quant.valuation_graham_mediano.preco_justo == graham_med_esperado == 30.36
+
+        # Valida Triangulação SEM peso duplo para Bazin 8% (apenas DDM, Bazin 6% e Graham)
+        assert quant.triangulacao is not None
+        tri_c = quant.triangulacao.conservador
+        tri_m = quant.triangulacao.mediano
+
+        esperados_c = [
+            quant.valuation_conservador.preco_justo,
+            quant.valuation_bazin_conservador.dy_6.preco_justo,
+            quant.valuation_graham_conservador.preco_justo,
+        ]
+        assert tri_c.modelos_triangulados == ["ddm", "bazin_6", "graham"]
+        assert tri_c.modelos_validos == 3
+        assert tri_c.minimo == min(esperados_c)
+        assert tri_c.maximo == max(esperados_c)
+        assert tri_c.mediana == round(statistics.median(esperados_c), 2)
+        assert tri_c.piso_bazin_8_juros_brasil == quant.valuation_bazin_conservador.dy_8.preco_justo
+        assert tri_c.bazin_8_preco_justo == quant.valuation_bazin_conservador.dy_8.preco_justo
+        assert tri_c.dispersao_pct is not None and tri_c.dispersao_pct > 0
+
+        esperados_m = [
+            quant.valuation_mediano.preco_justo,
+            quant.valuation_bazin_mediano.dy_6.preco_justo,
+            quant.valuation_graham_mediano.preco_justo,
+        ]
+        assert tri_m.modelos_triangulados == ["ddm", "bazin_6", "graham"]
+        assert tri_m.modelos_validos == 3
+        assert tri_m.minimo == min(esperados_m)
+        assert tri_m.maximo == max(esperados_m)
+        assert tri_m.mediana == round(statistics.median(esperados_m), 2)
+        assert tri_m.piso_bazin_8_juros_brasil == quant.valuation_bazin_mediano.dy_8.preco_justo
+
         # Confirma persistência do JSON quantitativo na pasta do ativo
         caminho_json = pasta_ativo / "Valuation_BBDC3_quant.json"
         assert caminho_json.is_file()
         salvo = json.loads(caminho_json.read_text(encoding="utf-8"))
         assert salvo["ticker"] == "BBDC3"
         assert salvo["valuation_mediano"]["preco_justo"] == quant.valuation_mediano.preco_justo
+        assert salvo["valuation_bazin_mediano"]["dy_6"]["preco_justo"] == quant.valuation_bazin_mediano.dy_6.preco_justo
+        assert salvo["valuation_bazin_mediano"]["dy_8"]["preco_justo"] == quant.valuation_bazin_mediano.dy_8.preco_justo
+        assert salvo["valuation_graham_mediano"]["preco_justo"] == quant.valuation_graham_mediano.preco_justo
+        assert salvo["triangulacao"]["mediano"]["mediana"] == tri_m.mediana
 
     def test_calculadora_degrada_limpo_em_empresa_com_prejuizo(self) -> None:
         state = {
@@ -229,6 +298,88 @@ class TestCalculadoraDeterministica:
         assert quant.multiplos_conservador.P_L is None
         assert quant.valuation_conservador is None
         assert quant.erro_valuation_conservador is not None
+        assert quant.valuation_bazin_conservador is not None
+        assert quant.valuation_bazin_conservador.dy_6 is None
+        assert quant.valuation_bazin_conservador.dy_8 is None
+        assert quant.valuation_bazin_conservador.erro_dy_6 is not None
+        assert quant.valuation_bazin_conservador.erro_dy_8 is not None
+        assert quant.valuation_graham_conservador is None
+        assert quant.erro_valuation_graham_conservador is not None
+        assert quant.triangulacao is not None
+        assert quant.triangulacao.conservador.modelos_validos == 0
+        assert quant.triangulacao.conservador.mediana is None
+
+    def test_calculadora_prejuizo_e_pl_negativo_simultaneos_sem_crash(self) -> None:
+        state = {
+            "messages": [],
+            "ticker": "CRISE3",
+            "setor": "varejo",
+            "caminhos_pdfs": ["1T26.pdf"],
+            "tentativas_extracao": 1,
+            "dados_extraidos": {
+                "1T26.pdf": _fazer_trimestre(
+                    "1T26", lucro=-500_000_000.0, pl=-2_000_000_000.0, roe=-0.25
+                )
+            },
+            "erros_validacao": {},
+            "validacao_concluida": True,
+        }
+
+        with patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_bbdc3()):
+            out = calculadora_node(state)
+
+        quant = ResultadoQuantitativo.model_validate(out["resultado_quantitativo"])
+        assert quant.valuation_conservador is None
+        assert quant.valuation_bazin_conservador is not None
+        assert quant.valuation_bazin_conservador.dy_6 is None
+        assert quant.valuation_bazin_conservador.dy_8 is None
+        # Graham jamais pode calcular sqrt((-LPA) * (-VPA))
+        assert quant.valuation_graham_conservador is None
+        assert quant.valuation_graham_mediano is None
+        assert quant.erro_valuation_graham_conservador is not None
+        assert quant.triangulacao is not None
+        assert quant.triangulacao.conservador.modelos_validos == 0
+        assert quant.triangulacao.conservador.mediana is None
+
+    def test_calculadora_pl_negativo_com_lucro_e_payout_positivos_degrada_apenas_graham(
+        self,
+    ) -> None:
+        state = {
+            "messages": [],
+            "ticker": "PLNEG3",
+            "setor": "varejo",
+            "caminhos_pdfs": ["1T26.pdf"],
+            "tentativas_extracao": 1,
+            "dados_extraidos": {
+                "1T26.pdf": _fazer_trimestre(
+                    "1T26",
+                    lucro=500_000_000.0,
+                    pl=-2_000_000_000.0,
+                    roe=0.15,
+                    payout=0.50,
+                    num_acoes=1_000_000_000.0,
+                )
+            },
+            "erros_validacao": {},
+            "validacao_concluida": True,
+        }
+
+        with patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_bbdc3()):
+            out = calculadora_node(state)
+
+        quant = ResultadoQuantitativo.model_validate(out["resultado_quantitativo"])
+        assert quant.valuation_conservador is not None
+        assert quant.valuation_bazin_conservador is not None
+        assert quant.valuation_bazin_conservador.dy_6 is not None
+        assert quant.valuation_bazin_conservador.dy_8 is not None
+        assert quant.valuation_graham_conservador is None
+        assert quant.erro_valuation_graham_conservador is not None
+        assert quant.triangulacao is not None
+        tri_c = quant.triangulacao.conservador
+        assert tri_c.modelos_triangulados == ["ddm", "bazin_6"]
+        assert tri_c.modelos_validos == 2
+        assert tri_c.graham_preco_justo is None
+        assert tri_c.piso_bazin_8_juros_brasil == quant.valuation_bazin_conservador.dy_8.preco_justo
 
 
 class TestLoopReflexaoGrafo:
@@ -385,9 +536,93 @@ class TestFallbackAnalista503:
         assert llm_503.invoke.call_count == 1
         relatorio = out["messages"][-1].content
         assert "MODO DE FALLBACK QUANTITATIVO" in relatorio
-        assert "Tabela Comparativa de Valuation e Múltiplos (BBDC3)" in relatorio
+        assert "Triangulação de Valuation (BBDC3)" in relatorio
+        assert "DDM de 2 Estágios" in relatorio
+        assert "Décio Bazin Clássico" in relatorio
+        assert "Décio Bazin Conservador / Juros BR" in relatorio
+        assert "Benjamin Graham" in relatorio
+        assert "Mediana da Triangulação (DDM, Bazin 6%, Graham)" in relatorio
+        assert "um representante por metodologia" in relatorio
+        assert "IR de 15% sobre JCP" in relatorio
+        assert "Tabela Comparativa de Lucros e Múltiplos (BBDC3)" in relatorio
+        assert "LPA Projetado — Forward (R$)" in relatorio
+        assert "VPA Atual (R$)" in relatorio
+        assert "P/L Projetado — Forward" in relatorio
+        assert "P/VP Atual" in relatorio
         assert "Contexto Qualitativo Extraído dos PDFs" in relatorio
         assert "não constitui recomendação de compra, venda ou manutenção" in relatorio
+
+    def test_fallback_503_com_4_trimestres_rotula_multiplos_como_anuais_realizados(
+        self,
+    ) -> None:
+        llm_503 = MagicMock()
+        llm_503.invoke.side_effect = RuntimeError("503 UNAVAILABLE")
+
+        trimestres = {
+            "1T26.pdf": _fazer_trimestre("1T26", lucro=6_800_000_000.0),
+            "2T26.pdf": _fazer_trimestre("2T26", lucro=7_000_000_000.0),
+            "3T26.pdf": _fazer_trimestre("3T26", lucro=7_100_000_000.0),
+            "4T26.pdf": _fazer_trimestre("4T26", lucro=7_200_000_000.0),
+        }
+
+        def fake_extract(caminho_pdf: str, feedback_correcao=None, llm=None):
+            return trimestres[caminho_pdf]
+
+        app = build_app(llm=llm_503)
+        with (
+            patch("graph.nodes.extrair_dados_do_pdf", side_effect=fake_extract),
+            patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_bbdc3()),
+        ):
+            out = app.invoke(
+                {
+                    "messages": [],
+                    "setor": "banco",
+                    "ticker": "BBDC3",
+                    "caminhos_pdfs": list(trimestres.keys()),
+                    "tentativas_extracao": 0,
+                    "usar_cache": False,
+                }
+            )
+
+        relatorio = out["messages"][-1].content
+        assert "Lucro Líquido Anual (R$)" in relatorio
+        assert "LPA Anual (R$)" in relatorio
+        assert "P/L Anual" in relatorio
+        assert "4T realizados" in relatorio
+        assert "LPA Projetado — Forward" not in relatorio
+
+    def test_fallback_503_exibe_na_com_motivo_quando_modelo_indisponivel(self) -> None:
+        llm_503 = MagicMock()
+        llm_503.invoke.side_effect = RuntimeError("503 UNAVAILABLE")
+
+        app = build_app(llm=llm_503)
+        dados_pl_neg = _fazer_trimestre(
+            "3T26",
+            lucro=500_000_000.0,
+            pl=-2_000_000_000.0,
+            roe=0.15,
+            payout=0.50,
+            num_acoes=1_000_000_000.0,
+        )
+        with (
+            patch("graph.nodes.extrair_dados_do_pdf", return_value=dados_pl_neg),
+            patch("tools.utils.yf.Ticker", return_value=_mock_yfinance_bbdc3()),
+        ):
+            out = app.invoke(
+                {
+                    "messages": [],
+                    "setor": "varejo",
+                    "ticker": "PLNEG3",
+                    "caminhos_pdfs": ["3T26.pdf"],
+                    "tentativas_extracao": 0,
+                    "usar_cache": False,
+                }
+            )
+
+        relatorio = out["messages"][-1].content
+        assert "Triangulação de Valuation (PLNEG3)" in relatorio
+        assert "N/A (" in relatorio
+        assert "vpa deve ser estritamente positivo" in relatorio
 
     def test_erro_503_usa_modelo_fallback_quando_configurado(self) -> None:
         llm_primario = MagicMock()
