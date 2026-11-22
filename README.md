@@ -79,7 +79,7 @@ To eliminate LLM arithmetic hallucinations, **100% of financial calculations exe
        * **Stage 2 (Terminal Value / Perpetuity):** Assumes competitive equilibrium ($\text{ROE}_{\text{terminal}} = K_e$), applying maturity sustainable payout $\text{payout}_{\text{terminal}} = 1 - \frac{g_{\text{perpetual}}}{K_e}$ in Gordon Growth.
        * **Defaults:** **$K_e = 14.5\%$** (`TAXA_DESCONTO_PADRAO = 0.145`) and **$g_{\text{perpetual}} = 4.0\%$** (`CRESCIMENTO_PERPETUO_PADRAO = 0.04`), yielding $\text{payout}_{\text{terminal}} = 72.41\%$.
     2. **Décio Bazin Ceiling Price (`calcular_preco_teto_bazin`):**
-       * Computes $\text{Ceiling Price} = \frac{\text{DPA}}{\text{yield\_minimo}}$ with projected gross $\text{DPA} = \text{LPA} \times \text{payout}$ at **two yield tiers**: **6% Classic** (`YIELD_MINIMO_BAZIN_PADRAO = 0.06`) and **8% Brazil-Rate Conservative Floor** (`YIELD_MINIMO_BAZIN_CONSERVADOR = 0.08`, calibrating for high Selic and 15% withholding tax on JCP).
+       - Computes $`\text{Ceiling Price} = \frac{\text{DPA}}{\text{yield\_minimo}}`$ with projected gross $\text{DPA} = \text{LPA} \times \text{payout}$ at **two yield tiers**: **6% Classic** (`YIELD_MINIMO_BAZIN_PADRAO = 0.06`) and **8% Brazil-Rate Conservative Floor** (`YIELD_MINIMO_BAZIN_CONSERVADOR = 0.08`, calibrating for high Selic and 15% withholding tax on JCP).
        * Strict domain guards reject `bool`, `NaN`/`inf`, `dpa <= 0`, `preco_atual <= 0`, and `yield_minimo` outside `(0, 1)`.
     3. **Benjamin Graham Intrinsic Value (`calcular_valor_intrinseco_graham`):**
        * Computes $\text{Intrinsic Value} = \sqrt{22.5 \times \text{LPA} \times \text{VPA}}$ (`CONSTANTE_GRAHAM_PADRAO = 22.5`).
